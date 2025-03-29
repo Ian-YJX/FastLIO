@@ -2,7 +2,7 @@ common:
     lid_topic:  "/hesai/xt32/lidar_points"
     imu_topic:  "/imu/imu"
     time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
-    rootDir: "/home/ian/ws_LTMapper/src/FAST_LIO_SLAM/FAST-LIO"
+    rootDir: "/home/ian/ws_LTMapper/src/FAST_LIO_SLAM/FAST-LIO/data_lio"
 preprocess:
     lidar_type: 4                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
     scan_line: 32

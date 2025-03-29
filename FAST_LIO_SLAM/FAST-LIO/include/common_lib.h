@@ -172,6 +172,23 @@ struct StatesGroup
     Matrix<double, DIM_STATE, DIM_STATE> cov; // states covariance
 };
 
+struct PointXYZIRPYTRGB
+{
+    PCL_ADD_POINT4D;
+    PCL_ADD_RGB;
+    PCL_ADD_INTENSITY;
+    float roll;
+    float pitch;
+    float yaw;
+    double time;
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+} EIGEN_ALIGN16;
+
+POINT_CLOUD_REGISTER_POINT_STRUCT(PointXYZIRPYTRGB,
+                                  (float, x, x)(float, y, y)(float, z, z)(float, rgb, rgb)(float, intensity, intensity)(float, roll, roll)(float, pitch, pitch)(float, yaw, yaw)(double, time, time))
+
+typedef PointXYZIRPYTRGB PointTypePose;
+
 template <typename T>
 T rad2deg(T radians)
 {
