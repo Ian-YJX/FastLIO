@@ -1,37 +1,3 @@
-// This is an advanced implementation of the algorithm described in the
-// following paper:
-//   J. Zhang and S. Singh. LOAM: Lidar Odometry and Mapping in Real-time.
-//     Robotics: Science and Systems Conference (RSS). Berkeley, CA, July 2014.
-
-// Modifier: Livox               dev@livoxtech.com
-
-// Copyright 2013, Ji Zhang, Carnegie Mellon University
-// Further contributions copyright (c) 2016, Southwest Research Institute
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-//
-// 1. Redistributions of source code must retain the above copyright notice,
-//    this list of conditions and the following disclaimer.
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-// 3. Neither the name of the copyright holder nor the names of its
-//    contributors may be used to endorse or promote products derived from this
-//    software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
-// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-// POSSIBILITY OF SUCH DAMAGE.
 #include <omp.h>
 #include <mutex>
 #include <math.h>
@@ -43,6 +9,9 @@
 #include <so3_math.h>
 #include <ros/ros.h>
 #include <Eigen/Core>
+#include <Eigen/Eigen>
+#include <Eigen/Dense>
+#include <eigen_conversions/eigen_msg.h>
 #include "IMU_Processing.hpp"
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
@@ -57,8 +26,13 @@
 #include <tf/transform_broadcaster.h>
 #include <geometry_msgs/Vector3.h>
 #include <livox_ros_driver/CustomMsg.h>
-#include "preprocess.h"
+// #include "preprocess.h"
 #include <ikd-Tree/ikd_Tree.h>
+#include "sc-relo/Scancontext.h"
+
+using namespace std;
+using namespace Eigen;
+namespace fs = std::experimental::filesystem;
 
 #define INIT_TIME (0.1)
 #define LASER_POINT_COV (0.001)
@@ -94,6 +68,9 @@ bool point_selected_surf[100000] = {0};
 bool lidar_pushed, flg_reset, flg_exit = false, flg_EKF_inited;
 bool scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
 
+float keyframeAddingDistThreshold;  // 判断是否为关键帧的距离阈值,yaml
+float keyframeAddingAngleThreshold; // 判断是否为关键帧的角度阈值,yaml
+
 vector<vector<int>> pointSearchInd_surf;
 vector<BoxPointType> cub_needrm;
 vector<PointVector> Nearest_Points;
@@ -115,7 +92,16 @@ PointCloudXYZI::Ptr _featsArray;
 pcl::VoxelGrid<PointType> downSizeFilterSurf;
 pcl::VoxelGrid<PointType> downSizeFilterMap;
 
+ScanContext::SCManager scLoop;
+float transformTobeMapped[6]; 
+
 KD_TREE ikdtree;
+
+enum class SCInputType
+{
+    SINGLE_SCAN_FULL,
+    MULTI_SCAN_FEAT
+};
 
 V3F XAxisPoint_body(LIDAR_SP_LEN, 0.0, 0.0);
 V3F XAxisPoint_world(LIDAR_SP_LEN, 0.0, 0.0);
@@ -138,28 +124,82 @@ geometry_msgs::PoseStamped msg_body_pose;
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
 
+// back end
+vector<pcl::PointCloud<PointType>::Ptr> surfCloudKeyFrames; // 历史所有关键帧的平面点集合(降采样)
+
+pcl::PointCloud<PointType>::Ptr cloudKeyPoses3D(new pcl::PointCloud<PointType>());         // 历史关键帧位姿(位置)
+pcl::PointCloud<PointTypePose>::Ptr cloudKeyPoses6D(new pcl::PointCloud<PointTypePose>()); // 历史关键帧位姿
+pcl::PointCloud<PointType>::Ptr copy_cloudKeyPoses3D(new pcl::PointCloud<PointType>());
+pcl::PointCloud<PointTypePose>::Ptr copy_cloudKeyPoses6D(new pcl::PointCloud<PointTypePose>());
+
+ros::Publisher pubHistoryKeyFrames; // 发布loop history keyframe submap
+ros::Publisher pubIcpKeyFrames;
+ros::Publisher pubRecentKeyFrames;
+ros::Publisher pubRecentKeyFrame;
+
+// 计算当前帧与前一帧位姿变换,如果变化太小,不设为关键帧,反之设为关键帧
+bool saveFrame()
+{
+    if (cloudKeyPoses3D->points.empty())
+        return true;
+
+    // 前一帧位姿,注:最开始没有的时候,在函数extractCloud里面有
+    Eigen::Affine3f transStart = pclPointToAffine3f(cloudKeyPoses6D->back());
+    // 当前帧位姿
+    Eigen::Affine3f transFinal = trans2Affine3f(transformTobeMapped);
+    // 位姿变换增量
+    Eigen::Affine3f transBetween = transStart.inverse() * transFinal;
+    float x, y, z, roll, pitch, yaw;
+    // pcl::getTranslationAndEulerAngles是根据仿射矩阵计算x,y,z,roll,pitch,yaw
+    pcl::getTranslationAndEulerAngles(transBetween, x, y, z, roll, pitch, yaw); // 获取上一帧相对当前帧的位姿
+
+    // 旋转和平移量都较小,当前帧不设为关键帧
+    if (abs(roll) < keyframeAddingAngleThreshold &&
+        abs(pitch) < keyframeAddingAngleThreshold &&
+        abs(yaw) < keyframeAddingAngleThreshold &&
+        sqrt(x * x + y * y + z * z) < keyframeAddingDistThreshold)
+        return false;
+    return true;
+}
+
+void saveKeyFrame()
+{
+    if (saveFrame() == false)
+        return;
+    // 关键帧位姿
+    PointType thisPose3D;
+    PointTypePose thisPose6D;
+    thisPose3D.x = state_point.pos(0);
+    thisPose3D.y = state_point.pos(1);
+    thisPose3D.z = state_point.pos(2);
+
+    thisPose6D.x = state_point.pos(0);
+    thisPose6D.y = state_point.pos(1);
+    thisPose6D.z = state_point.pos(2);
+    thisPose6D.roll = euler_cur(0);
+    thisPose6D.pitch = euler_cur(1);
+    thisPose6D.yaw = euler_cur(2);
+
+    transformTobeMapped[0] = thisPose6D.roll;
+    transformTobeMapped[1] = thisPose6D.pitch;
+    transformTobeMapped[2] = thisPose6D.yaw;
+    transformTobeMapped[3] = thisPose6D.x;
+    transformTobeMapped[4] = thisPose6D.y;
+    transformTobeMapped[5] = thisPose6D.z;
+
+    // 历史关键帧位姿
+    // cloudKeyPoses6D->push_back(thisPose);
+    cloudKeyPoses3D->push_back(thisPose3D);
+
+    // 历史关键帧平面点集合
+    surfCloudKeyFrames.push_back(feats_down_world);
+}
 void SigHandle(int sig)
 {
     flg_exit = true;
     ROS_WARN("catch sig %d", sig);
     sig_buffer.notify_all();
 }
-
-// inline void dump_lio_state_to_log(FILE *fp)
-// {
-//     V3D rot_ang(Log(state_point.rot.toRotationMatrix()));
-//     fprintf(fp, "%lf ", Measures.lidar_beg_time - first_lidar_time);
-//     fprintf(fp, "%lf %lf %lf ", rot_ang(0), rot_ang(1), rot_ang(2));                            // Angle
-//     fprintf(fp, "%lf %lf %lf ", state_point.pos(0), state_point.pos(1), state_point.pos(2));    // Pos
-//     fprintf(fp, "%lf %lf %lf ", 0.0, 0.0, 0.0);                                                 // omega
-//     fprintf(fp, "%lf %lf %lf ", state_point.vel(0), state_point.vel(1), state_point.vel(2));    // Vel
-//     fprintf(fp, "%lf %lf %lf ", 0.0, 0.0, 0.0);                                                 // Acc
-//     fprintf(fp, "%lf %lf %lf ", state_point.bg(0), state_point.bg(1), state_point.bg(2));       // Bias_g
-//     fprintf(fp, "%lf %lf %lf ", state_point.ba(0), state_point.ba(1), state_point.ba(2));       // Bias_a
-//     fprintf(fp, "%lf %lf %lf ", state_point.grav[0], state_point.grav[1], state_point.grav[2]); // Bias_a
-//     fprintf(fp, "\r\n");
-//     fflush(fp);
-// }
 
 inline void dump_lio_state_to_log(std::ofstream &logFile)
 {
@@ -756,6 +796,11 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 
 int main(int argc, char **argv)
 {
+    for (int i = 0; i < 6; ++i)
+    {
+        transformTobeMapped[i] = 0;
+    }
+
     ros::init(argc, argv, "laserMapping");
     ros::NodeHandle nh;
 
@@ -821,19 +866,29 @@ int main(int argc, char **argv)
     fill(epsi, epsi + 23, 0.001);
     kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, NUM_MAX_ITERATIONS, epsi);
 
+    // saver path
+    fsmkdir(root_dir);
+    string pcd_path = root_dir + "/PCDs/";
+    string scd_path = root_dir + "/SCDs/";
+    string log_path = root_dir + "/Log/";
+    fsmkdir(pcd_path);
+    fsmkdir(scd_path);
+    fsmkdir(log_path);
+
     /*** debug record ***/
     FILE *fp;
     string pos_log_dir = root_dir + "/Log/pos_log.txt";
     fp = fopen(pos_log_dir.c_str(), "w");
 
-    ofstream fout_pre, fout_out, fout_pos;
+    ofstream fout_pre, fout_out, fout_pos, fout_update_pose;
     fout_pre.open(DEBUG_FILE_DIR("mat_pre.txt"), ios::out);
     fout_out.open(DEBUG_FILE_DIR("mat_out.txt"), ios::out);
     fout_pos.open(DEBUG_FILE_DIR("pos_log.txt"), ios::out);
+    fout_update_pose.open(DEBUG_FILE_DIR("update_pose.csv"), ios::out);
     if (fout_pre && fout_out)
-        cout << "~~~~" << ROOT_DIR << " file opened" << endl;
+        cout << "~~~~" << root_dir << " file opened" << endl;
     else
-        cout << "~~~~" << ROOT_DIR << " doesn't exist" << endl;
+        cout << "~~~~" << root_dir << " doesn't exist" << endl;
 
     /*** ROS subscribe initialization ***/
     ros::Subscriber sub_pcl = p_pre->lidar_type == AVIA ? nh.subscribe(lid_topic, 200000, livox_pcl_cbk) : nh.subscribe(lid_topic, 200000, standard_pcl_cbk);
@@ -955,6 +1010,8 @@ int main(int argc, char **argv)
 
             double t_update_end = omp_get_wtime();
 
+            saveKeyFrame(); // 保存关键帧
+
             /******* Publish odometry *******/
             publish_odometry(pubOdomAftMapped);
 
@@ -1014,6 +1071,23 @@ int main(int argc, char **argv)
         rate.sleep();
     }
 
+    fout_out.close();
+    fout_pre.close();
+
+    /**************** data saver runs when programe is closing ****************/
+    std::cout << "**************** data saver runs when programe is closing ****************" << std::endl;
+
+    if (!((surfCloudKeyFrames.size() == cloudKeyPoses3D->points.size())))
+    {
+        std::cout << surfCloudKeyFrames.size() << " " << cloudKeyPoses3D->points.size() << std::endl;
+        std::cout << " the condition --surfCloudKeyFrames.size() == cloudKeyPoses3D->points.size()-- is not satisfied" << std::endl;
+        ros::shutdown();
+    }
+    else
+    {
+        std::cout << "the num of total keyframe is " << surfCloudKeyFrames.size() << std::endl;
+    }
+
     /**************** save map ****************/
     /* 1. make sure you have enough memories
     /* 2. pcd save will largely influence the real-time performences **/
@@ -1021,25 +1095,81 @@ int main(int argc, char **argv)
     {
         // 设置文件路径
         string file_name = "globalMap.pcd";
-        string all_points_dir = string(ROOT_DIR) + "PCD/" + file_name;
-    
+        string all_points_dir = root_dir + "/PCD/" + file_name;
+
         // 移除 NaN 点
         std::vector<int> indices;
         pcl::removeNaNFromPointCloud(*pcl_wait_save, *pcl_wait_save, indices);
-    
+
         // 体素滤波降采样（根据需要调整 leaf size）
         pcl::VoxelGrid<pcl::PointXYZINormal> sor;
         sor.setInputCloud(pcl_wait_save);
         sor.setLeafSize(0.1f, 0.1f, 0.1f); // 体素大小，数值越大文件越小
         sor.filter(*pcl_wait_save);
 
-        pcl::PCDWriter pcd_writer;
+        // pcl::PCDWriter pcd_writer;
         cout << "Current scan saved to /PCD/" << file_name << endl;
-        pcd_writer.writeASCII(all_points_dir, *pcl_wait_save);
+        pcl::io::savePCDFileASCII(all_points_dir, *pcl_wait_save);
     }
-    
-    fout_out.close();
-    fout_pre.close();
+    // save sc and keyframe
+    // - SINGLE_SCAN_FULL: using downsampled original point cloud (/full_cloud_projected + downsampling)
+    // - MULTI_SCAN_FEAT: using NearKeyframes (because a MulRan scan does not have beyond region, so to solve this issue ... )
+    const SCInputType sc_input_type = SCInputType::SINGLE_SCAN_FULL; // TODO: change this in ymal
+    bool soMany = false;
+    std::cout << "save sc and keyframe" << std::endl;
+
+    for (size_t i = 0; i < cloudKeyPoses3D->size(); i++)
+    {
+        pcl::PointCloud<PointType>::Ptr save_cloud(new pcl::PointCloud<PointType>());
+        if (sc_input_type == SCInputType::SINGLE_SCAN_FULL)
+        {
+            pcl::copyPointCloud(*surfCloudKeyFrames[i], *save_cloud);
+            scLoop.makeAndSaveScancontextAndKeys(*save_cloud);
+        }
+        else if (sc_input_type == SCInputType::MULTI_SCAN_FEAT)
+        {
+            pcl::PointCloud<PointType>::Ptr multiKeyFrameFeatureCloud(new pcl::PointCloud<PointType>());
+            // loopFindNearKeyframes(multiKeyFrameFeatureCloud, i, historyKeyframeSearchNum);
+            if (soMany)
+            {
+                // *save_cloud += *multiKeyFrameFeatureCloud;
+                pcl::copyPointCloud(*multiKeyFrameFeatureCloud, *save_cloud);
+            }
+            else
+            {
+                // *save_cloud += *surfCloudKeyFrames[i];
+                pcl::copyPointCloud(*surfCloudKeyFrames[i], *save_cloud);
+            }
+            scLoop.makeAndSaveScancontextAndKeys(*save_cloud);
+        }
+
+        // save sc data
+        const auto &curr_scd = scLoop.getConstRefRecentSCD();
+        std::string curr_scd_node_idx = padZeros(scLoop.polarcontexts_.size() - 1);
+
+        writeSCD(scd_path + curr_scd_node_idx + ".scd", curr_scd);
+
+        string all_points_dir(pcd_path + string(curr_scd_node_idx) + ".pcd");
+        save_cloud->width = save_cloud->points.size();
+        save_cloud->height = 1;
+        pcl::io::savePCDFileASCII(all_points_dir, *save_cloud);
+    }
+
+    // save poses
+    std::cout << "Saving poses" << std::endl;
+    string traj_dir(root_dir + "/trajectory.pcd");
+    pcl::io::savePCDFileASCII(traj_dir, *cloudKeyPoses3D);
+
+    // save pose graph
+    // cout << "****************************************************" << endl;
+    // cout << "Saving  posegraph" << endl;
+
+    // for (auto &_po : update_nokf_poses)
+    // {
+    //     WriteTextV2(fout_update_pose, _po);
+    // }
+
+    fout_update_pose.close();
 
     if (runtime_pos_log)
     {
