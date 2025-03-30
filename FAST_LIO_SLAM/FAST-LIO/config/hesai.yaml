@@ -19,8 +19,8 @@ mapping:
     extrinsic_R: [ 0.999610, 0.027142, 0.006595,
                   0.027188, -0.999606, -0.006972,
                  0.006403, 0.007149, -0.999954]
-    keyframeAddingDistThreshold: 4.0
-    keyframeAddingAngleThreshold: 0.4
+    keyframeAddingDistThreshold: 2.0
+    keyframeAddingAngleThreshold: 1.0
 
 publish:     
     scan_publish_en:  true       # 'false' will close all the point cloud output

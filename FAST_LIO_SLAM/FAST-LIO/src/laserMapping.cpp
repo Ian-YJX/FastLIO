@@ -193,10 +193,14 @@ bool saveAFrame()
     Eigen::Affine3f transFinal = trans2Affine3f(transformTobeMapped);
     // 位姿变换增量
     Eigen::Affine3f transBetween = transStart.inverse() * transFinal;
+
+    // std::cout << "Rotation Matrix (3x3):\n" << transBetween.rotation() << std::endl;
+    // std::cout << "Translation Vector (3x1):\n" << transBetween.translation() << std::endl;
+
     float x, y, z, roll, pitch, yaw;
     // pcl::getTranslationAndEulerAngles是根据仿射矩阵计算x,y,z,roll,pitch,yaw
     pcl::getTranslationAndEulerAngles(transBetween, x, y, z, roll, pitch, yaw); // 获取上一帧相对当前帧的位姿
-
+    ROS_INFO("roll: %f, pitch: %f, yaw: %f, sqrt(x^2+y^2+z^2): %f", abs(roll), abs(pitch), abs(yaw), sqrt(x * x + y * y + z * z));
     // 旋转和平移量都较小,当前帧不设为关键帧
     if (abs(roll) < keyframeAddingAngleThreshold &&
         abs(pitch) < keyframeAddingAngleThreshold &&
@@ -216,13 +220,13 @@ void saveKeyFrame()
     thisPose3D.x = state_point.pos(0);
     thisPose3D.y = state_point.pos(1);
     thisPose3D.z = state_point.pos(2);
-
+    Eigen::Vector3d eulerAngle1 = state_point.rot.matrix().eulerAngles(2, 1, 0); // yaw-pitch-roll,单位:弧度
     thisPose6D.x = state_point.pos(0);
     thisPose6D.y = state_point.pos(1);
     thisPose6D.z = state_point.pos(2);
-    thisPose6D.roll = euler_cur(0);
-    thisPose6D.pitch = euler_cur(1);
-    thisPose6D.yaw = euler_cur(2);
+    thisPose6D.roll = eulerAngle1(0);
+    thisPose6D.pitch = eulerAngle1(1);
+    thisPose6D.yaw = eulerAngle1(2);
     thisPose6D.time = lidar_end_time;
     // 历史关键帧位姿
     cloudKeyPoses6D->push_back(thisPose6D);
@@ -1098,7 +1102,7 @@ int main(int argc, char **argv)
                 s_plot9[time_log_counter] = aver_time_consu;
                 s_plot10[time_log_counter] = add_point_size;
                 time_log_counter++;
-                printf("[ mapping ]: time: IMU + Map + Input Downsample: %0.6f ave match: %0.6f ave solve: %0.6f  ave ICP: %0.6f  map incre: %0.6f ave total: %0.6f icp: %0.6f construct H: %0.6f \n", t1 - t0, aver_time_match, aver_time_solve, t3 - t1, t5 - t3, aver_time_consu, aver_time_icp, aver_time_const_H_time);
+                // printf("[ mapping ]: time: IMU + Map + Input Downsample: %0.6f ave match: %0.6f ave solve: %0.6f  ave ICP: %0.6f  map incre: %0.6f ave total: %0.6f icp: %0.6f construct H: %0.6f \n", t1 - t0, aver_time_match, aver_time_solve, t3 - t1, t5 - t3, aver_time_consu, aver_time_icp, aver_time_const_H_time);
                 ext_euler = SO3ToEuler(state_point.offset_R_L_I);
                 fout_out << setw(20) << Measures.lidar_beg_time - first_lidar_time << " " << euler_cur.transpose() << " " << state_point.pos.transpose() << " " << ext_euler.transpose() << " " << state_point.offset_T_L_I.transpose() << " " << state_point.vel.transpose()
                          << " " << state_point.bg.transpose() << " " << state_point.ba.transpose() << " " << state_point.grav << " " << feats_undistort->points.size() << endl;
@@ -1147,7 +1151,7 @@ int main(int argc, char **argv)
         // 体素滤波降采样（根据需要调整 leaf size）
         pcl::VoxelGrid<pcl::PointXYZINormal> sor;
         sor.setInputCloud(pcl_wait_save);
-        sor.setLeafSize(0.1f, 0.1f, 0.1f); // 体素大小，数值越大文件越小
+        sor.setLeafSize(0.3f, 0.3f, 0.3f); // 体素大小，数值越大文件越小
         sor.filter(*pcl_wait_save);
 
         // pcl::PCDWriter pcd_writer;
