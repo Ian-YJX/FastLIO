@@ -68,8 +68,8 @@ bool point_selected_surf[100000] = {0};
 bool lidar_pushed, flg_reset, flg_exit = false, flg_EKF_inited;
 bool scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
 
-float keyframeAddingDistThreshold;  // 判断是否为关键帧的距离阈值,yaml
-float keyframeAddingAngleThreshold; // 判断是否为关键帧的角度阈值,yaml
+double keyframeAddingDistThreshold = 0;  // 判断是否为关键帧的距离阈值,yaml
+double keyframeAddingAngleThreshold = 0; // 判断是否为关键帧的角度阈值,yaml
 
 vector<vector<int>> pointSearchInd_surf;
 vector<BoxPointType> cub_needrm;
@@ -93,7 +93,7 @@ pcl::VoxelGrid<PointType> downSizeFilterSurf;
 pcl::VoxelGrid<PointType> downSizeFilterMap;
 
 ScanContext::SCManager scLoop;
-float transformTobeMapped[6]; 
+float transformTobeMapped[6];
 
 KD_TREE ikdtree;
 
@@ -137,10 +137,23 @@ ros::Publisher pubIcpKeyFrames;
 ros::Publisher pubRecentKeyFrames;
 ros::Publisher pubRecentKeyFrame;
 
-// 计算当前帧与前一帧位姿变换,如果变化太小,不设为关键帧,反之设为关键帧
-bool saveFrame()
+void getCurPose(state_ikfom cur_state)
 {
-    if (cloudKeyPoses3D->points.empty())
+    // 欧拉角是没有群的性质,所以从SO3还是一般的rotation matrix,转换过来的结果一样
+    Eigen::Vector3d eulerAngle = cur_state.rot.matrix().eulerAngles(2, 1, 0); // yaw-pitch-roll,单位:弧度
+
+    transformTobeMapped[0] = eulerAngle(2);    // roll
+    transformTobeMapped[1] = eulerAngle(1);    // pitch
+    transformTobeMapped[2] = eulerAngle(0);    // yaw
+    transformTobeMapped[3] = cur_state.pos(0); // x
+    transformTobeMapped[4] = cur_state.pos(1); // y
+    transformTobeMapped[5] = cur_state.pos(2); // z
+}
+
+// 计算当前帧与前一帧位姿变换,如果变化太小,不设为关键帧,反之设为关键帧
+bool saveAFrame()
+{
+    if (cloudKeyPoses3D->points.empty()||cloudKeyPoses6D->points.empty())
         return true;
 
     // 前一帧位姿,注:最开始没有的时候,在函数extractCloud里面有
@@ -164,7 +177,7 @@ bool saveFrame()
 
 void saveKeyFrame()
 {
-    if (saveFrame() == false)
+    if (saveAFrame() == false)
         return;
     // 关键帧位姿
     PointType thisPose3D;
@@ -180,15 +193,8 @@ void saveKeyFrame()
     thisPose6D.pitch = euler_cur(1);
     thisPose6D.yaw = euler_cur(2);
 
-    transformTobeMapped[0] = thisPose6D.roll;
-    transformTobeMapped[1] = thisPose6D.pitch;
-    transformTobeMapped[2] = thisPose6D.yaw;
-    transformTobeMapped[3] = thisPose6D.x;
-    transformTobeMapped[4] = thisPose6D.y;
-    transformTobeMapped[5] = thisPose6D.z;
-
     // 历史关键帧位姿
-    // cloudKeyPoses6D->push_back(thisPose);
+    cloudKeyPoses6D->push_back(thisPose6D);
     cloudKeyPoses3D->push_back(thisPose3D);
 
     // 历史关键帧平面点集合
@@ -832,6 +838,8 @@ int main(int argc, char **argv)
     nh.param<bool>("pcd_save_enable", pcd_save_en, 0);
     nh.param<vector<double>>("mapping/extrinsic_T", extrinT, vector<double>());
     nh.param<vector<double>>("mapping/extrinsic_R", extrinR, vector<double>());
+    nh.param<double>("mapping/keyframeAddingDistThreshold", keyframeAddingDistThreshold, 0);
+    nh.param<double>("mapping/keyframeAddingAngleThreshold", keyframeAddingAngleThreshold, 0);
     // cout << "p_pre->lidar_type " << p_pre->lidar_type << endl;
 
     path.header.stamp = ros::Time::now();
@@ -881,10 +889,14 @@ int main(int argc, char **argv)
     fp = fopen(pos_log_dir.c_str(), "w");
 
     ofstream fout_pre, fout_out, fout_pos, fout_update_pose;
-    fout_pre.open(DEBUG_FILE_DIR("mat_pre.txt"), ios::out);
-    fout_out.open(DEBUG_FILE_DIR("mat_out.txt"), ios::out);
-    fout_pos.open(DEBUG_FILE_DIR("pos_log.txt"), ios::out);
-    fout_update_pose.open(DEBUG_FILE_DIR("update_pose.csv"), ios::out);
+    string pre_dir = root_dir + "/Log/mat_pre.txt";
+    string out_dir = root_dir + "/Log/mat_out.txt";
+    string pos_dir = root_dir + "/Log/pos_log.txt";
+    string update_pose_dir = root_dir + "/Log/update_pose.csv";
+    fout_pre.open(pre_dir.c_str(), ios::out);
+    fout_out.open(out_dir.c_str(), ios::out);
+    fout_pos.open(pos_dir.c_str(), ios::out);
+    fout_update_pose.open(update_pose_dir.c_str(), ios::out);
     if (fout_pre && fout_out)
         cout << "~~~~" << root_dir << " file opened" << endl;
     else
@@ -1009,9 +1021,8 @@ int main(int argc, char **argv)
             geoQuat.w = state_point.rot.coeffs()[3];
 
             double t_update_end = omp_get_wtime();
-
+            getCurPose(state_point);
             saveKeyFrame(); // 保存关键帧
-
             /******* Publish odometry *******/
             publish_odometry(pubOdomAftMapped);
 
@@ -1095,7 +1106,7 @@ int main(int argc, char **argv)
     {
         // 设置文件路径
         string file_name = "globalMap.pcd";
-        string all_points_dir = root_dir + "/PCD/" + file_name;
+        string all_points_dir = root_dir + file_name;
 
         // 移除 NaN 点
         std::vector<int> indices;
@@ -1108,7 +1119,7 @@ int main(int argc, char **argv)
         sor.filter(*pcl_wait_save);
 
         // pcl::PCDWriter pcd_writer;
-        cout << "Current scan saved to /PCD/" << file_name << endl;
+        cout << "Current scan saved to" << file_name << endl;
         pcl::io::savePCDFileASCII(all_points_dir, *pcl_wait_save);
     }
     // save sc and keyframe
