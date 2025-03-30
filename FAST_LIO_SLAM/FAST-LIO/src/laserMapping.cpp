@@ -71,6 +71,8 @@ bool scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
 double keyframeAddingDistThreshold = 0;  // 判断是否为关键帧的距离阈值,yaml
 double keyframeAddingAngleThreshold = 0; // 判断是否为关键帧的角度阈值,yaml
 
+std::vector<pose_with_time> update_nokf_poses;
+
 vector<vector<int>> pointSearchInd_surf;
 vector<BoxPointType> cub_needrm;
 vector<PointVector> Nearest_Points;
@@ -150,6 +152,35 @@ void getCurPose(state_ikfom cur_state)
     transformTobeMapped[5] = cur_state.pos(2); // z
 }
 
+// 更新里程计轨迹
+void updatePath(const PointTypePose &pose_in)
+{
+    string odometryFrame = "camera_init";
+    geometry_msgs::PoseStamped pose_stamped;
+    pose_stamped.header.stamp = ros::Time().fromSec(pose_in.time);
+
+    pose_stamped.header.frame_id = odometryFrame;
+    pose_stamped.pose.position.x = pose_in.x;
+    pose_stamped.pose.position.y = pose_in.y;
+    pose_stamped.pose.position.z = pose_in.z;
+    tf::Quaternion q = tf::createQuaternionFromRPY(pose_in.roll, pose_in.pitch, pose_in.yaw);
+    pose_stamped.pose.orientation.x = q.x();
+    pose_stamped.pose.orientation.y = q.y();
+    pose_stamped.pose.orientation.z = q.z();
+    pose_stamped.pose.orientation.w = q.w();
+
+    Eigen::Matrix3d R = Exp((double)pose_in.roll, (double)pose_in.pitch, (double)pose_in.yaw);
+    Eigen::Vector3d t((double)pose_in.x, (double)pose_in.y, (double)pose_in.z);
+    ros::Time ts = ros::Time().fromSec(pose_in.time);
+
+    pose_with_time update_pose;
+    update_pose.R = R;
+    update_pose.t = t;
+    update_pose.timestamp = ts;
+    update_nokf_poses.emplace_back(update_pose);
+
+}
+
 // 计算当前帧与前一帧位姿变换,如果变化太小,不设为关键帧,反之设为关键帧
 bool saveAFrame()
 {
@@ -192,13 +223,14 @@ void saveKeyFrame()
     thisPose6D.roll = euler_cur(0);
     thisPose6D.pitch = euler_cur(1);
     thisPose6D.yaw = euler_cur(2);
-
+    thisPose6D.time = lidar_end_time;
     // 历史关键帧位姿
     cloudKeyPoses6D->push_back(thisPose6D);
     cloudKeyPoses3D->push_back(thisPose3D);
 
     // 历史关键帧平面点集合
     surfCloudKeyFrames.push_back(feats_down_world);
+    updatePath(thisPose6D); // 可视化update后的最新位姿
 }
 void SigHandle(int sig)
 {
@@ -916,7 +948,7 @@ int main(int argc, char **argv)
     signal(SIGINT, SigHandle);
     ros::Rate rate(5000);
     bool status = ros::ok();
-    const double EXIT_TIMEOUT = 15.0;               // 15秒超时退出
+    const double EXIT_TIMEOUT = 5.0;               // 15秒超时退出
     ros::Time last_message_time = ros::Time::now(); // 记录最后一次接收消息的时间
     while (status)
     {
@@ -1105,7 +1137,7 @@ int main(int argc, char **argv)
     if (pcl_wait_save->size() > 0 && pcd_save_en)
     {
         // 设置文件路径
-        string file_name = "globalMap.pcd";
+        string file_name = "/globalMap.pcd";
         string all_points_dir = root_dir + file_name;
 
         // 移除 NaN 点
@@ -1119,7 +1151,7 @@ int main(int argc, char **argv)
         sor.filter(*pcl_wait_save);
 
         // pcl::PCDWriter pcd_writer;
-        cout << "Current scan saved to" << file_name << endl;
+        cout << "Current scan saved to " << file_name << endl;
         pcl::io::savePCDFileASCII(all_points_dir, *pcl_wait_save);
     }
     // save sc and keyframe
@@ -1175,10 +1207,10 @@ int main(int argc, char **argv)
     // cout << "****************************************************" << endl;
     // cout << "Saving  posegraph" << endl;
 
-    // for (auto &_po : update_nokf_poses)
-    // {
-    //     WriteTextV2(fout_update_pose, _po);
-    // }
+    for (auto &_po : update_nokf_poses)
+    {
+        WriteTextV2(fout_update_pose, _po);
+    }
 
     fout_update_pose.close();
 

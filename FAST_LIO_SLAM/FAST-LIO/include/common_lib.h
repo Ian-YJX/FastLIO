@@ -82,6 +82,13 @@ struct MeasureGroup // Lidar data and imu dates for the curent process
     deque<sensor_msgs::Imu::ConstPtr> imu;
 };
 
+struct pose_with_time
+{
+    Eigen::Vector3d t;
+    Eigen::Matrix3d R;
+    ros::Time timestamp;
+};
+
 struct StatesGroup
 {
     StatesGroup()
@@ -334,6 +341,14 @@ inline void writeSCD(std::string fileName, Eigen::MatrixXd matrix, std::string d
         file << matrix.format(the_format);
         file.close();
     }
+}
+
+void WriteTextV2(std::ofstream &ofs, pose_with_time data)
+{
+    ofs << std::fixed << data.R(0, 0) << "," << data.R(0, 1) << "," << data.R(0, 2) << "," << data.t[0] << ",\n"
+        << data.R(1, 0) << "," << data.R(1, 1) << "," << data.R(1, 2) << "," << data.t[1] << ",\n"
+        << data.R(2, 0) << "," << data.R(2, 1) << "," << data.R(2, 2) << "," << data.t[2] << ",\n"
+        << "0.000000," << "0.000000," << "0.000000," << data.timestamp << std::endl;
 }
 
 #endif
