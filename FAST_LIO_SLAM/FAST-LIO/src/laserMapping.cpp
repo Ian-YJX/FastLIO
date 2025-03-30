@@ -11,6 +11,7 @@
 #include <Eigen/Core>
 #include <Eigen/Eigen>
 #include <Eigen/Dense>
+#include <Eigen/Geometry>
 #include <eigen_conversions/eigen_msg.h>
 #include "IMU_Processing.hpp"
 #include <nav_msgs/Odometry.h>
@@ -25,6 +26,7 @@
 #include <tf/transform_datatypes.h>
 #include <tf/transform_broadcaster.h>
 #include <geometry_msgs/Vector3.h>
+#include <geometry_msgs/Quaternion.h>
 #include <livox_ros_driver/CustomMsg.h>
 // #include "preprocess.h"
 #include <ikd-Tree/ikd_Tree.h>
@@ -38,7 +40,7 @@ namespace fs = std::experimental::filesystem;
 #define LASER_POINT_COV (0.001)
 #define MAXN (720000)
 #define PUBFRAME_PERIOD (20)
-
+#define KEY_FRAME_MIN_INTERVAL (0.5)
 /*** Time Log Variables ***/
 double kdtree_incremental_time = 0.0, kdtree_search_time = 0.0, kdtree_delete_time = 0.0;
 double T1[MAXN], s_plot[MAXN], s_plot2[MAXN], s_plot3[MAXN], s_plot4[MAXN], s_plot5[MAXN], s_plot6[MAXN], s_plot7[MAXN], s_plot8[MAXN], s_plot9[MAXN], s_plot10[MAXN], s_plot11[MAXN];
@@ -178,17 +180,18 @@ void updatePath(const PointTypePose &pose_in)
     update_pose.t = t;
     update_pose.timestamp = ts;
     update_nokf_poses.emplace_back(update_pose);
-
 }
 
 // 计算当前帧与前一帧位姿变换,如果变化太小,不设为关键帧,反之设为关键帧
-bool saveAFrame()
+bool saveFrame()
 {
-    if (cloudKeyPoses3D->points.empty()||cloudKeyPoses6D->points.empty())
+    static double lastKeyFrameTime = 0;
+    if (cloudKeyPoses3D->points.empty() || cloudKeyPoses6D->points.empty())
         return true;
-
+    double curKeyFrameTime = lidar_end_time;
     // 前一帧位姿,注:最开始没有的时候,在函数extractCloud里面有
-    Eigen::Affine3f transStart = pclPointToAffine3f(cloudKeyPoses6D->back());
+    PointTypePose cur_cloud = cloudKeyPoses6D->back();
+    Eigen::Affine3f transStart = pclPointToAffine3f(cur_cloud);
     // 当前帧位姿
     Eigen::Affine3f transFinal = trans2Affine3f(transformTobeMapped);
     // 位姿变换增量
@@ -200,30 +203,52 @@ bool saveAFrame()
     float x, y, z, roll, pitch, yaw;
     // pcl::getTranslationAndEulerAngles是根据仿射矩阵计算x,y,z,roll,pitch,yaw
     pcl::getTranslationAndEulerAngles(transBetween, x, y, z, roll, pitch, yaw); // 获取上一帧相对当前帧的位姿
-    ROS_INFO("roll: %f, pitch: %f, yaw: %f, sqrt(x^2+y^2+z^2): %f", abs(roll), abs(pitch), abs(yaw), sqrt(x * x + y * y + z * z));
+    // ROS_INFO("roll: %f, pitch: %f, yaw: %f, sqrt(x^2+y^2+z^2): %f", abs(roll), abs(pitch), abs(yaw), sqrt(x * x + y * y + z * z));
     // 旋转和平移量都较小,当前帧不设为关键帧
     if (abs(roll) < keyframeAddingAngleThreshold &&
         abs(pitch) < keyframeAddingAngleThreshold &&
         abs(yaw) < keyframeAddingAngleThreshold &&
         sqrt(x * x + y * y + z * z) < keyframeAddingDistThreshold)
         return false;
-    return true;
+    else if (abs(roll) >= keyframeAddingAngleThreshold || abs(pitch) >= keyframeAddingAngleThreshold || abs(yaw) >= keyframeAddingAngleThreshold)
+    {
+        if(curKeyFrameTime - lastKeyFrameTime < KEY_FRAME_MIN_INTERVAL)
+        {
+            // ROS_INFO("Saving for rotation, but time interval is too short");
+            return false;
+        }
+        else
+        {
+            lastKeyFrameTime = curKeyFrameTime;
+            // ROS_WARN("Saving for rotation");
+            return true;
+        }
+
+    }
+    else if (sqrt(x * x + y * y + z * z) > keyframeAddingDistThreshold)
+    {
+        // ROS_WARN("Saving for translation");
+        return true;
+    }
 }
 
 void saveKeyFrame()
 {
-    if (saveAFrame() == false)
+    if (saveFrame() == false)
         return;
     // 关键帧位姿
     PointType thisPose3D;
     PointTypePose thisPose6D;
-    thisPose3D.x = state_point.pos(0);
-    thisPose3D.y = state_point.pos(1);
-    thisPose3D.z = state_point.pos(2);
-    Eigen::Vector3d eulerAngle1 = state_point.rot.matrix().eulerAngles(2, 1, 0); // yaw-pitch-roll,单位:弧度
-    thisPose6D.x = state_point.pos(0);
-    thisPose6D.y = state_point.pos(1);
-    thisPose6D.z = state_point.pos(2);
+    thisPose3D.x = odomAftMapped.pose.pose.position.x;
+    thisPose3D.y = odomAftMapped.pose.pose.position.y;
+    thisPose3D.z = odomAftMapped.pose.pose.position.z;
+    geometry_msgs::Quaternion q_ros = odomAftMapped.pose.pose.orientation;
+    // 手动转换
+    Eigen::Quaterniond q(q_ros.w, q_ros.x, q_ros.y, q_ros.z);
+    Eigen::Vector3d eulerAngle1 = q.toRotationMatrix().eulerAngles(2, 1, 0); // yaw-pitch-roll,单位:弧度
+    thisPose6D.x = odomAftMapped.pose.pose.position.x;
+    thisPose6D.y = odomAftMapped.pose.pose.position.y;
+    thisPose6D.z = odomAftMapped.pose.pose.position.z;
     thisPose6D.roll = eulerAngle1(0);
     thisPose6D.pitch = eulerAngle1(1);
     thisPose6D.yaw = eulerAngle1(2);
@@ -952,7 +977,7 @@ int main(int argc, char **argv)
     signal(SIGINT, SigHandle);
     ros::Rate rate(5000);
     bool status = ros::ok();
-    const double EXIT_TIMEOUT = 5.0;               // 15秒超时退出
+    const double EXIT_TIMEOUT = 5.0;                // 15秒超时退出
     ros::Time last_message_time = ros::Time::now(); // 记录最后一次接收消息的时间
     while (status)
     {
@@ -1058,10 +1083,10 @@ int main(int argc, char **argv)
 
             double t_update_end = omp_get_wtime();
             getCurPose(state_point);
-            saveKeyFrame(); // 保存关键帧
+
             /******* Publish odometry *******/
             publish_odometry(pubOdomAftMapped);
-
+            saveKeyFrame(); // 保存关键帧
             /*** add the feature points to map kdtree ***/
             t3 = omp_get_wtime();
             map_incremental();
@@ -1102,7 +1127,7 @@ int main(int argc, char **argv)
                 s_plot9[time_log_counter] = aver_time_consu;
                 s_plot10[time_log_counter] = add_point_size;
                 time_log_counter++;
-                // printf("[ mapping ]: time: IMU + Map + Input Downsample: %0.6f ave match: %0.6f ave solve: %0.6f  ave ICP: %0.6f  map incre: %0.6f ave total: %0.6f icp: %0.6f construct H: %0.6f \n", t1 - t0, aver_time_match, aver_time_solve, t3 - t1, t5 - t3, aver_time_consu, aver_time_icp, aver_time_const_H_time);
+                printf("[ mapping ]: time: IMU + Map + Input Downsample: %0.6f ave match: %0.6f ave solve: %0.6f  ave ICP: %0.6f  map incre: %0.6f ave total: %0.6f icp: %0.6f construct H: %0.6f \n", t1 - t0, aver_time_match, aver_time_solve, t3 - t1, t5 - t3, aver_time_consu, aver_time_icp, aver_time_const_H_time);
                 ext_euler = SO3ToEuler(state_point.offset_R_L_I);
                 fout_out << setw(20) << Measures.lidar_beg_time - first_lidar_time << " " << euler_cur.transpose() << " " << state_point.pos.transpose() << " " << ext_euler.transpose() << " " << state_point.offset_T_L_I.transpose() << " " << state_point.vel.transpose()
                          << " " << state_point.bg.transpose() << " " << state_point.ba.transpose() << " " << state_point.grav << " " << feats_undistort->points.size() << endl;
