@@ -137,7 +137,7 @@ void Session::loopFindNearKeyframesLocalCoord(
 
 void Session::loadSessionKeyframePointclouds()
 {
-    std::string pcd_dir = session_dir_path_ + "/Scans/";
+    std::string pcd_dir = session_dir_path_ + "/PCDs/";
 
     // parse names (sorted)
     std::map<int, std::string> pcd_names; // for auto-sort (because scManager should register SCDs in the right node order.)

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(removert)
 
-set(CMAKE_BUILD_TYPE "Release")
+set(CMAKE_BUILD_TYPE "Debug")
 set(CMAKE_CXX_STANDARD 17) # C++17 to use stdc++fs
 # set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g -pthread")
 

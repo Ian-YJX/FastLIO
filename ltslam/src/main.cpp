@@ -11,6 +11,6 @@ int main(int argc, char** argv)
     ltslam3d.run();
 
     ROS_INFO("\033[1;32m----> LTslam done.\033[0m");
-    ros::spin();
+    // ros::spin();
     return 0;
 }

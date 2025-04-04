@@ -27,7 +27,21 @@
 #include <nav_msgs/Odometry.h>
 #include <tf/transform_broadcaster.h>
 #include <eigen_conversions/eigen_msg.h>
-#include"../src/preprocess.h"
+#include "../src/preprocess.h"
+
+// gtsam
+#include <gtsam/inference/Symbol.h>
+#include <gtsam/nonlinear/Values.h>
+#include <gtsam/nonlinear/Marginals.h>
+#include <gtsam/geometry/Rot3.h>
+#include <gtsam/geometry/Pose3.h>
+#include <gtsam/geometry/Rot2.h>
+#include <gtsam/geometry/Pose2.h>
+#include <gtsam/slam/PriorFactor.h>
+#include <gtsam/slam/BetweenFactor.h>
+#include <gtsam/nonlinear/NonlinearFactorGraph.h>
+#include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
+#include <gtsam/nonlinear/ISAM2.h>
 using namespace std;
 using namespace Eigen;
 namespace fs = std::experimental::filesystem;
@@ -301,6 +315,18 @@ bool esti_plane(Matrix<T, 4, 1> &pca_result, const PointVector &point, const T &
     return true;
 }
 
+gtsam::Pose3 pclPointTogtsamPose3(PointTypePose thisPoint)
+{
+    return gtsam::Pose3(gtsam::Rot3::RzRyRx(double(thisPoint.roll), double(thisPoint.pitch), double(thisPoint.yaw)),
+                        gtsam::Point3(double(thisPoint.x), double(thisPoint.y), double(thisPoint.z)));
+}
+
+gtsam::Pose3 trans2gtsamPose(float transformIn[])
+{
+    return gtsam::Pose3(gtsam::Rot3::RzRyRx(transformIn[0], transformIn[1], transformIn[2]),
+                        gtsam::Point3(transformIn[3], transformIn[4], transformIn[5]));
+}
+
 Eigen::Affine3f pclPointToAffine3f(PointTypePose thisPoint)
 {
     return pcl::getTransformation(thisPoint.x, thisPoint.y, thisPoint.z, thisPoint.roll, thisPoint.pitch, thisPoint.yaw);
@@ -325,6 +351,30 @@ inline std::string padZeros(int val, int num_digits = 6)
     std::ostringstream out;
     out << std::internal << std::setfill('0') << std::setw(num_digits) << val;
     return out.str();
+}
+
+void writeVertex(const int _node_idx, const gtsam::Pose3 &_initPose, std::vector<std::string> &vertices_str)
+{
+    gtsam::Point3 t = _initPose.translation();
+    gtsam::Rot3 R = _initPose.rotation();
+
+    std::string curVertexInfo{
+        "VERTEX_SE3:QUAT " + std::to_string(_node_idx) + " " + std::to_string(t.x()) + " " + std::to_string(t.y()) + " " + std::to_string(t.z()) + " " + std::to_string(R.toQuaternion().x()) + " " + std::to_string(R.toQuaternion().y()) + " " + std::to_string(R.toQuaternion().z()) + " " + std::to_string(R.toQuaternion().w())};
+
+    // pgVertexSaveStream << curVertexInfo << std::endl;
+    vertices_str.emplace_back(curVertexInfo);
+}
+
+void writeEdge(const std::pair<int, int> _node_idx_pair, const gtsam::Pose3 &_relPose, std::vector<std::string> &edges_str)
+{
+    gtsam::Point3 t = _relPose.translation();
+    gtsam::Rot3 R = _relPose.rotation();
+
+    std::string curEdgeInfo{
+        "EDGE_SE3:QUAT " + std::to_string(_node_idx_pair.first) + " " + std::to_string(_node_idx_pair.second) + " " + std::to_string(t.x()) + " " + std::to_string(t.y()) + " " + std::to_string(t.z()) + " " + std::to_string(R.toQuaternion().x()) + " " + std::to_string(R.toQuaternion().y()) + " " + std::to_string(R.toQuaternion().z()) + " " + std::to_string(R.toQuaternion().w())};
+
+    // pgEdgeSaveStream << curEdgeInfo << std::endl;
+    edges_str.emplace_back(curEdgeInfo);
 }
 
 // save scd for each keyframe

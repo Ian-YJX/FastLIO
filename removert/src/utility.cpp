@@ -2,51 +2,54 @@
 
 bool cout_debug = false;
 
-
 void readBin(std::string _bin_path, pcl::PointCloud<PointType>::Ptr _pcd_ptr)
 {
- 	std::fstream input(_bin_path.c_str(), ios::in | ios::binary);
-	if(!input.good()){
-		cerr << "Could not read file: " << _bin_path << endl;
-		exit(EXIT_FAILURE);
-	}
-	input.seekg(0, ios::beg);
-  
-	for (int ii=0; input.good() && !input.eof(); ii++) {
-		PointType point;
+    std::fstream input(_bin_path.c_str(), ios::in | ios::binary);
+    if (!input.good())
+    {
+        cerr << "Could not read file: " << _bin_path << endl;
+        exit(EXIT_FAILURE);
+    }
+    input.seekg(0, ios::beg);
 
-		input.read((char *) &point.x, sizeof(float));
-		input.read((char *) &point.y, sizeof(float));
-		input.read((char *) &point.z, sizeof(float));
-		input.read((char *) &point.intensity, sizeof(float));
+    for (int ii = 0; input.good() && !input.eof(); ii++)
+    {
+        PointType point;
 
-		_pcd_ptr->push_back(point);
-	}
-	input.close();
+        input.read((char *)&point.x, sizeof(float));
+        input.read((char *)&point.y, sizeof(float));
+        input.read((char *)&point.z, sizeof(float));
+        input.read((char *)&point.intensity, sizeof(float));
+
+        _pcd_ptr->push_back(point);
+    }
+    input.close();
 }
 
-std::vector<double> splitPoseLine(std::string _str_line, char _delimiter) {
+std::vector<double> splitPoseLine(std::string _str_line, char _delimiter)
+{
     std::vector<double> parsed;
     std::stringstream ss(_str_line);
     std::string temp;
-    while (getline(ss, temp, _delimiter)) {
+    while (getline(ss, temp, _delimiter))
+    {
         parsed.push_back(std::stod(temp)); // convert string to "double"
     }
     return parsed;
 }
 
-SphericalPoint cart2sph(const PointType & _cp)
+SphericalPoint cart2sph(const PointType &_cp)
 { // _cp means cartesian point
 
-    if(cout_debug){
+    if (cout_debug)
+    {
         cout << "Cartesian Point [x, y, z]: [" << _cp.x << ", " << _cp.y << ", " << _cp.z << endl;
     }
 
-    SphericalPoint sph_point {
-         std::atan2(_cp.y, _cp.x), 
-         std::atan2(_cp.z, std::sqrt(_cp.x*_cp.x + _cp.y*_cp.y)),
-         std::sqrt(_cp.x*_cp.x + _cp.y*_cp.y + _cp.z*_cp.z)
-    };    
+    SphericalPoint sph_point{
+        std::atan2(_cp.y, _cp.x),
+        std::atan2(_cp.z, std::sqrt(_cp.x * _cp.x + _cp.y * _cp.y)),
+        std::sqrt(_cp.x * _cp.x + _cp.y * _cp.y + _cp.z * _cp.z)};
     return sph_point;
 }
 
@@ -60,7 +63,6 @@ float deg2rad(float degrees)
     return degrees * M_PI / 180.0;
 }
 
-
 void transformGlobalMapToLocal(
     const pcl::PointCloud<PointType>::Ptr &_map_global,
     Eigen::Matrix4d _base_pose_inverse, Eigen::Matrix4d _base2lidar, pcl::PointCloud<PointType>::Ptr &_map_local)
@@ -72,14 +74,16 @@ void transformGlobalMapToLocal(
 } // transformGlobalMapToLocal
 
 pcl::PointCloud<PointType>::Ptr parseProjectedPoints(const pcl::PointCloud<PointType>::Ptr &_scan,
-                                                                    const std::pair<float, float> _fov, /* e.g., [vfov = 50 (upper 25, lower 25), hfov = 360] */
-                                                                    const std::pair<int, int> _rimg_size)
+                                                     const std::pair<float, float> _fov, /* e.g., [vfov = 50 (upper 25, lower 25), hfov = 360] */
+                                                     const std::pair<int, int> _rimg_size)
 {
     auto [map_rimg, map_rimg_ptidx] = map2RangeImg(_scan, _fov, _rimg_size); // the most time comsuming part 2 -> so openMP applied inside
     pcl::PointCloud<PointType>::Ptr scan_projected(new pcl::PointCloud<PointType>);
-    for (int row_idx = 0; row_idx < map_rimg_ptidx.rows; ++row_idx) {
-        for (int col_idx = 0; col_idx < map_rimg_ptidx.cols; ++col_idx) {
-            if(map_rimg_ptidx.at<int>(row_idx, col_idx) == 0) // 0 means no point (see map2RangeImg)
+    for (int row_idx = 0; row_idx < map_rimg_ptidx.rows; ++row_idx)
+    {
+        for (int col_idx = 0; col_idx < map_rimg_ptidx.cols; ++col_idx)
+        {
+            if (map_rimg_ptidx.at<int>(row_idx, col_idx) == 0) // 0 means no point (see map2RangeImg)
                 continue;
 
             scan_projected->push_back(_scan->points[map_rimg_ptidx.at<int>(row_idx, col_idx)]);
@@ -88,10 +92,9 @@ pcl::PointCloud<PointType>::Ptr parseProjectedPoints(const pcl::PointCloud<Point
     return scan_projected;
 } // map2RangeImg
 
-
 std::pair<cv::Mat, cv::Mat> map2RangeImg(const pcl::PointCloud<PointType>::Ptr &_scan,
-                                                        const std::pair<float, float> _fov, /* e.g., [vfov = 50 (upper 25, lower 25), hfov = 360] */
-                                                        const std::pair<int, int> _rimg_size)
+                                         const std::pair<float, float> _fov, /* e.g., [vfov = 50 (upper 25, lower 25), hfov = 360] */
+                                         const std::pair<int, int> _rimg_size)
 {
     const float kVFOV = _fov.first;
     const float kHFOV = _fov.second;
@@ -106,8 +109,8 @@ std::pair<cv::Mat, cv::Mat> map2RangeImg(const pcl::PointCloud<PointType>::Ptr &
     // @ points to range img
     int num_points = _scan->points.size();
 
-    const int kNumOmpCores = 16; // hard coding for fast dev 
-    #pragma omp parallel for num_threads(kNumOmpCores)
+    const int kNumOmpCores = 16; // hard coding for fast dev
+#pragma omp parallel for num_threads(kNumOmpCores)
     for (int pt_idx = 0; pt_idx < num_points; ++pt_idx)
     {
         PointType this_point = _scan->points[pt_idx];
@@ -157,8 +160,8 @@ std::pair<cv::Mat, cv::Mat> map2RangeImg(const pcl::PointCloud<PointType>::Ptr &
 //     ROS_INFO_STREAM("\033[1;32m Octree Downsampled pointcloud have: " << _to_save->points.size() << " points.\033[0m");
 // } // octreeDownsampling
 
-pcl::PointCloud<PointType>::Ptr local2global(const pcl::PointCloud<PointType>::Ptr &_scan_local, 
-                                const Eigen::Matrix4d &_scan_pose, const Eigen::Matrix4d &_lidar2base)
+pcl::PointCloud<PointType>::Ptr local2global(const pcl::PointCloud<PointType>::Ptr &_scan_local,
+                                             const Eigen::Matrix4d &_scan_pose, const Eigen::Matrix4d &_lidar2base)
 {
     pcl::PointCloud<PointType>::Ptr scan_global(new pcl::PointCloud<PointType>());
     pcl::transformPointCloud(*_scan_local, *scan_global, _lidar2base);
@@ -167,32 +170,100 @@ pcl::PointCloud<PointType>::Ptr local2global(const pcl::PointCloud<PointType>::P
     return scan_global;
 }
 
+// pcl::PointCloud<PointType>::Ptr mergeScansWithinGlobalCoordUtil(
+//     const std::vector<pcl::PointCloud<PointType>::Ptr> &_scans,
+//     const std::vector<Eigen::Matrix4d> &_scans_poses, Eigen::Matrix4d _lidar2base)
+// {
+//     pcl::PointCloud<PointType>::Ptr ptcloud_merged(new pcl::PointCloud<PointType>());
+
+//     // NOTE: _scans must be in local coord
+//     for (std::size_t scan_idx = 0; scan_idx < _scans.size(); scan_idx++)
+//     {
+//         if (_scans.empty() || _scans_poses.empty() || _scans.size() != _scans_poses.size())
+//         {
+//             ROS_ERROR("Invalid scan or pose data!");
+//             return nullptr;
+//         }
+//         ROS_INFO_STREAM("Merging scan " << scan_idx + 1 << " of " << _scans.size() << " scans.");
+//         auto ii_scan = _scans.at(scan_idx);       // pcl::PointCloud<PointType>::Ptr
+//         auto ii_pose = _scans_poses.at(scan_idx); // Eigen::Matrix4d
+
+//         // local to global (local2global)
+//         pcl::PointCloud<PointType>::Ptr scan_global_coord(new pcl::PointCloud<PointType>());
+//         pcl::transformPointCloud(*ii_scan, *scan_global_coord, _lidar2base); // kSE3MatExtrinsicLiDARtoPoseBase
+//         pcl::transformPointCloud(*scan_global_coord, *scan_global_coord, ii_pose);
+
+//         // merge the scan into the global map
+//         *ptcloud_merged += *scan_global_coord;
+//     }
+//     if (ptcloud_merged->empty())
+//     {
+//         ROS_ERROR_STREAM("Merged point cloud is empty!");
+//     }
+
+//     return ptcloud_merged;
+// } // mergeScansWithinGlobalCoord
+
 pcl::PointCloud<PointType>::Ptr mergeScansWithinGlobalCoordUtil(
     const std::vector<pcl::PointCloud<PointType>::Ptr> &_scans,
     const std::vector<Eigen::Matrix4d> &_scans_poses, Eigen::Matrix4d _lidar2base)
 {
+    // Step 1: 检查输入数据
+    if (_scans.empty() || _scans_poses.empty() || _scans.size() != _scans_poses.size())
+    {
+        ROS_ERROR("Invalid scan or pose data!");
+        return nullptr;
+    }
+    
     pcl::PointCloud<PointType>::Ptr ptcloud_merged(new pcl::PointCloud<PointType>());
 
     // NOTE: _scans must be in local coord
     for (std::size_t scan_idx = 0; scan_idx < _scans.size(); scan_idx++)
     {
+        // ROS_INFO_STREAM("Scan " << scan_idx + 1 << " size: " << _scans[scan_idx]->size());
+        // ROS_INFO_STREAM("Pose " << scan_idx + 1 << " size: " << _scans_poses[scan_idx].rows() << " x " << _scans_poses[scan_idx].cols());
         auto ii_scan = _scans.at(scan_idx);       // pcl::PointCloud<PointType>::Ptr
         auto ii_pose = _scans_poses.at(scan_idx); // Eigen::Matrix4d
 
-        // local to global (local2global)
+        // ROS_INFO_STREAM("\033[1;32m Processing scan " << scan_idx + 1 << " / " << _scans.size() << "\033[0m");
+        // if (ii_scan->empty())
+        // {
+        //     ROS_WARN_STREAM("Scan " << scan_idx + 1 << " is empty. Skipping...");
+        // }
+        // ROS_INFO_STREAM("Scan " << scan_idx + 1 << " size before transform: " << ii_scan->size());
+
+        // Step 2: 进行坐标变换
         pcl::PointCloud<PointType>::Ptr scan_global_coord(new pcl::PointCloud<PointType>());
-        pcl::transformPointCloud(*ii_scan, *scan_global_coord, _lidar2base); // kSE3MatExtrinsicLiDARtoPoseBase
+        pcl::transformPointCloud(*ii_scan, *scan_global_coord, _lidar2base);
         pcl::transformPointCloud(*scan_global_coord, *scan_global_coord, ii_pose);
 
-        // merge the scan into the global map
+        // if (scan_global_coord->empty())
+        // {
+        //     ROS_ERROR_STREAM("Transformed scan " << scan_idx + 1 << " is empty!");
+        //     continue;
+        // }
+
+        // ROS_INFO_STREAM("Scan " << scan_idx + 1 << " size after transform: " << scan_global_coord->size());
+
+        // Step 3: 合并点云
         *ptcloud_merged += *scan_global_coord;
     }
 
-    return ptcloud_merged;
-} // mergeScansWithinGlobalCoord
+    // Step 4: 检查最终合并结果
+    // if (ptcloud_merged->empty())
+    // {
+    //     ROS_ERROR_STREAM("Merged point cloud is empty!");
+    // }
+    // else
+    // {
+    //     ROS_INFO_STREAM("Final merged point cloud size: " << ptcloud_merged->size());
+    // }
 
-pcl::PointCloud<PointType>::Ptr global2local(const pcl::PointCloud<PointType>::Ptr &_scan_global, 
-                                const Eigen::Matrix4d &_scan_pose_inverse, const Eigen::Matrix4d &_base2lidar)
+    return ptcloud_merged;
+}
+
+pcl::PointCloud<PointType>::Ptr global2local(const pcl::PointCloud<PointType>::Ptr &_scan_global,
+                                             const Eigen::Matrix4d &_scan_pose_inverse, const Eigen::Matrix4d &_base2lidar)
 {
     pcl::PointCloud<PointType>::Ptr scan_local(new pcl::PointCloud<PointType>());
     pcl::transformPointCloud(*_scan_global, *scan_local, _scan_pose_inverse);
@@ -201,10 +272,16 @@ pcl::PointCloud<PointType>::Ptr global2local(const pcl::PointCloud<PointType>::P
     return scan_local;
 }
 
-void octreeDownsampling(const pcl::PointCloud<PointType>::Ptr &_src, 
-                              pcl::PointCloud<PointType>::Ptr &_to_save,
-                              const float _kDownsampleVoxelSize)
+void octreeDownsampling(const pcl::PointCloud<PointType>::Ptr &_src,
+                        pcl::PointCloud<PointType>::Ptr &_to_save,
+                        const float _kDownsampleVoxelSize)
 {
+    if (_src->empty())
+    {
+        ROS_ERROR("Input point cloud is empty in octreeDownsampling()");
+        // return;
+    }
+
     pcl::octree::OctreePointCloudVoxelCentroid<PointType> octree(_kDownsampleVoxelSize);
     octree.setInputCloud(_src);
     octree.defineBoundingBox();
@@ -218,52 +295,49 @@ void octreeDownsampling(const pcl::PointCloud<PointType>::Ptr &_src,
     _to_save->height = _to_save->points.size(); // make sure again the format of the downsampled point cloud
 } // octreeDownsampling
 
-
 std::pair<int, int> resetRimgSize(const std::pair<float, float> _fov, const float _resize_ratio)
 {
-    // default is 1 deg x 1 deg 
-    float alpha_vfov = _resize_ratio;    
-    float alpha_hfov = _resize_ratio;    
+    // default is 1 deg x 1 deg
+    float alpha_vfov = _resize_ratio;
+    float alpha_hfov = _resize_ratio;
 
     float V_FOV = _fov.first;
     float H_FOV = _fov.second;
 
-    int NUM_RANGE_IMG_ROW = std::round(V_FOV*alpha_vfov);
-    int NUM_RANGE_IMG_COL = std::round(H_FOV*alpha_hfov);
+    int NUM_RANGE_IMG_ROW = std::round(V_FOV * alpha_vfov);
+    int NUM_RANGE_IMG_COL = std::round(H_FOV * alpha_hfov);
 
-    std::pair<int, int> rimg {NUM_RANGE_IMG_ROW, NUM_RANGE_IMG_COL};
+    std::pair<int, int> rimg{NUM_RANGE_IMG_ROW, NUM_RANGE_IMG_COL};
     return rimg;
 }
 
+std::set<int> convertIntVecToSet(const std::vector<int> &v)
+{
+    std::set<int> s;
+    for (int x : v)
+    {
+        s.insert(x);
+    }
+    return s;
+}
 
-std::set<int> convertIntVecToSet(const std::vector<int> & v) 
-{ 
-    std::set<int> s; 
-    for (int x : v) { 
-        s.insert(x); 
-    } 
-    return s; 
-} 
-
-void pubRangeImg(cv::Mat& _rimg, 
-                sensor_msgs::ImagePtr& _msg,
-                image_transport::Publisher& _publiser,
-                std::pair<float, float> _caxis)
+void pubRangeImg(cv::Mat &_rimg,
+                 sensor_msgs::ImagePtr &_msg,
+                 image_transport::Publisher &_publiser,
+                 std::pair<float, float> _caxis)
 {
     cv::Mat scan_rimg_viz = convertColorMappedImg(_rimg, _caxis);
     _msg = cvmat2msg(scan_rimg_viz);
-    _publiser.publish(_msg);    
+    _publiser.publish(_msg);
 } // pubRangeImg
-
 
 sensor_msgs::ImagePtr cvmat2msg(const cv::Mat &_img)
 {
-  sensor_msgs::ImagePtr msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", _img).toImageMsg();
-  return msg;
+    sensor_msgs::ImagePtr msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", _img).toImageMsg();
+    return msg;
 }
 
-
-void publishPointcloud2FromPCLptr(const ros::Publisher& _scan_publisher, const pcl::PointCloud<PointType>::Ptr _scan)
+void publishPointcloud2FromPCLptr(const ros::Publisher &_scan_publisher, const pcl::PointCloud<PointType>::Ptr _scan)
 {
     sensor_msgs::PointCloud2 tempCloud;
     pcl::toROSMsg(*_scan, tempCloud);
@@ -271,7 +345,6 @@ void publishPointcloud2FromPCLptr(const ros::Publisher& _scan_publisher, const p
     tempCloud.header.frame_id = "removert";
     _scan_publisher.publish(tempCloud);
 } // publishPointcloud2FromPCLptr
-
 
 sensor_msgs::PointCloud2 publishCloud(ros::Publisher *thisPub, pcl::PointCloud<PointType>::Ptr thisCloud, ros::Time thisStamp, std::string thisFrame)
 {
@@ -286,11 +359,10 @@ sensor_msgs::PointCloud2 publishCloud(ros::Publisher *thisPub, pcl::PointCloud<P
 
 float pointDistance(PointType p)
 {
-    return sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
+    return sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
 }
 
 float pointDistance(PointType p1, PointType p2)
 {
-    return sqrt((p1.x-p2.x)*(p1.x-p2.x) + (p1.y-p2.y)*(p1.y-p2.y) + (p1.z-p2.z)*(p1.z-p2.z));
+    return sqrt((p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y) + (p1.z - p2.z) * (p1.z - p2.z));
 }
-

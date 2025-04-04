@@ -31,6 +31,7 @@
 // #include "preprocess.h"
 #include <ikd-Tree/ikd_Tree.h>
 #include "sc-relo/Scancontext.h"
+#include "common_lib.h"
 
 using namespace std;
 using namespace Eigen;
@@ -120,6 +121,20 @@ esekfom::esekf<state_ikfom, 12, input_ikfom> kf;
 state_ikfom state_point;
 vect3 pos_lid;
 
+// gtsam
+gtsam::NonlinearFactorGraph gtSAMgraph; // 实例化一个空的因子图
+gtsam::Values initialEstimate;
+gtsam::Values optimizedEstimate;
+gtsam::ISAM2 *isam;
+gtsam::Values isamCurrentEstimate;
+Eigen::MatrixXd poseCovariance;
+bool aLoopIsClosed = false;
+std::vector<std::string> edges_str;
+std::vector<std::string> vertices_str;
+vector<pair<int, int>> loopIndexQueue;                          // 回环索引队列
+vector<gtsam::Pose3> loopPoseQueue;                             // 回环位姿队列
+vector<gtsam::noiseModel::Diagonal::shared_ptr> loopNoiseQueue; // 回环噪声队列
+
 nav_msgs::Path path;
 nav_msgs::Odometry odomAftMapped;
 geometry_msgs::Quaternion geoQuat;
@@ -140,6 +155,68 @@ ros::Publisher pubHistoryKeyFrames; // 发布loop history keyframe submap
 ros::Publisher pubIcpKeyFrames;
 ros::Publisher pubRecentKeyFrames;
 ros::Publisher pubRecentKeyFrame;
+
+// 添加激光里程计因子
+void addOdomFactor()
+{
+    // 如果是第一帧
+    if (cloudKeyPoses3D->points.empty())
+    {
+        // 给出一个噪声模型,也就是协方差矩阵
+        gtsam::noiseModel::Diagonal::shared_ptr priorNoise = gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(6) << 1e-12, 1e-12, 1e-12, 1e-12, 1e-12, 1e-12).finished());
+        // 加入先验因子PriorFactor,固定这个顶点,对第0个节点增加约束
+        gtSAMgraph.add(gtsam::PriorFactor<gtsam::Pose3>(0, trans2gtsamPose(transformTobeMapped), priorNoise));
+        // 节点设置初始值,将这个顶点的值加入初始值中
+        initialEstimate.insert(0, trans2gtsamPose(transformTobeMapped));
+
+        // 变量节点设置初始值
+        writeVertex(0, trans2gtsamPose(transformTobeMapped), vertices_str);
+    }
+    // 不是第一帧,增加帧间约束
+    else
+    {
+        // 添加激光里程计因子
+        gtsam::noiseModel::Diagonal::shared_ptr odometryNoise = gtsam::noiseModel::Diagonal::Variances((gtsam::Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished());
+        gtsam::Pose3 poseFrom = pclPointTogtsamPose3(cloudKeyPoses6D->points.back()); // 上一个位姿
+        gtsam::Pose3 poseTo = trans2gtsamPose(transformTobeMapped);                   // 当前位姿
+        gtsam::Pose3 relPose = poseFrom.between(poseTo);
+        // 参数:前一帧id;当前帧id;前一帧与当前帧的位姿变换poseFrom.between(poseTo) = poseFrom.inverse()*poseTo;噪声协方差;
+        gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(cloudKeyPoses3D->size() - 1, cloudKeyPoses3D->size(), poseFrom.between(poseTo), odometryNoise));
+        // 变量节点设置初始值,将这个顶点的值加入初始值中
+        initialEstimate.insert(cloudKeyPoses3D->size(), poseTo);
+
+        writeVertex(cloudKeyPoses3D->size(), poseTo, vertices_str);
+        writeEdge({cloudKeyPoses3D->size() - 1, cloudKeyPoses3D->size()}, relPose, edges_str);
+    }
+}
+
+// 添加回环因子
+void addLoopFactor()
+{
+    if (loopIndexQueue.empty())
+        return;
+
+    // 把队列里面所有的回环约束添加进行
+    for (int i = 0; i < (int)loopIndexQueue.size(); ++i)
+    {
+        int indexFrom = loopIndexQueue[i].first; // 回环帧索引
+        int indexTo = loopIndexQueue[i].second;  // 当前帧索引
+        // 两帧的位姿变换（帧间约束）
+        gtsam::Pose3 poseBetween = loopPoseQueue[i];
+        // 回环的置信度就是icp的得分？
+        gtsam::noiseModel::Diagonal::shared_ptr noiseBetween = loopNoiseQueue[i];
+        // 加入约束
+        gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(indexFrom, indexTo, poseBetween, noiseBetween));
+
+        writeEdge({indexFrom, indexTo}, poseBetween, edges_str);
+    }
+    // 清空回环相关队列
+    loopIndexQueue.clear(); // it's very necessary
+    loopPoseQueue.clear();
+    loopNoiseQueue.clear();
+
+    aLoopIsClosed = true;
+}
 
 void getCurPose(state_ikfom cur_state)
 {
@@ -185,7 +262,7 @@ void updatePath(const PointTypePose &pose_in)
 // 计算当前帧与前一帧位姿变换,如果变化太小,不设为关键帧,反之设为关键帧
 bool saveFrame()
 {
-    static double lastKeyFrameTime = 0;
+    static double lastKeyFrameTime = lidar_end_time;
     if (cloudKeyPoses3D->points.empty() || cloudKeyPoses6D->points.empty())
         return true;
     double curKeyFrameTime = lidar_end_time;
@@ -210,21 +287,20 @@ bool saveFrame()
         abs(yaw) < keyframeAddingAngleThreshold &&
         sqrt(x * x + y * y + z * z) < keyframeAddingDistThreshold)
         return false;
-    else if (abs(roll) >= keyframeAddingAngleThreshold || abs(pitch) >= keyframeAddingAngleThreshold || abs(yaw) >= keyframeAddingAngleThreshold)
-    {
-        if(curKeyFrameTime - lastKeyFrameTime < KEY_FRAME_MIN_INTERVAL)
-        {
-            // ROS_INFO("Saving for rotation, but time interval is too short");
-            return false;
-        }
-        else
-        {
-            lastKeyFrameTime = curKeyFrameTime;
-            // ROS_WARN("Saving for rotation");
-            return true;
-        }
-
-    }
+    // else if (abs(roll) >= keyframeAddingAngleThreshold || abs(pitch) >= keyframeAddingAngleThreshold || abs(yaw) >= keyframeAddingAngleThreshold)
+    // {
+    //     if (curKeyFrameTime - lastKeyFrameTime < KEY_FRAME_MIN_INTERVAL)
+    //     {
+    //         // ROS_INFO("Saving for rotation, but time interval is too short");
+    //         return false;
+    //     }
+    //     else
+    //     {
+    //         lastKeyFrameTime = curKeyFrameTime;
+    //         // ROS_WARN("Saving for rotation");
+    //         return true;
+    //     }
+    // }
     // else if (sqrt(x * x + y * y + z * z) > keyframeAddingDistThreshold)
     else
     {
@@ -237,22 +313,61 @@ void saveKeyFrame()
 {
     if (saveFrame() == false)
         return;
+
+    addOdomFactor();
+
+    addLoopFactor();
+
+    // 执行优化,更新图模型
+    isam->update(gtSAMgraph, initialEstimate);
+    isam->update();
+
+    if (aLoopIsClosed == true)
+    {
+        cout << "pose is upated by isam " << endl;
+        isam->update();
+        isam->update();
+        isam->update();
+        isam->update();
+    }
+
+    gtSAMgraph.resize(0);
+    initialEstimate.clear();
+
     // 关键帧位姿
     PointType thisPose3D;
     PointTypePose thisPose6D;
-    thisPose3D.x = odomAftMapped.pose.pose.position.x;
-    thisPose3D.y = odomAftMapped.pose.pose.position.y;
-    thisPose3D.z = odomAftMapped.pose.pose.position.z;
-    geometry_msgs::Quaternion q_ros = odomAftMapped.pose.pose.orientation;
-    // 手动转换
-    Eigen::Quaterniond q(q_ros.w, q_ros.x, q_ros.y, q_ros.z);
-    Eigen::Vector3d eulerAngle1 = q.toRotationMatrix().eulerAngles(2, 1, 0); // yaw-pitch-roll,单位:弧度
-    thisPose6D.x = odomAftMapped.pose.pose.position.x;
-    thisPose6D.y = odomAftMapped.pose.pose.position.y;
-    thisPose6D.z = odomAftMapped.pose.pose.position.z;
-    thisPose6D.roll = eulerAngle1(0);
-    thisPose6D.pitch = eulerAngle1(1);
-    thisPose6D.yaw = eulerAngle1(2);
+    gtsam::Pose3 latestEstimate;
+
+    // 通过接口获得所以变量的优化结果
+    isamCurrentEstimate = isam->calculateBestEstimate();
+    // 取出优化后的当前帧位姿结果
+    latestEstimate = isamCurrentEstimate.at<gtsam::Pose3>(isamCurrentEstimate.size() - 1);
+    thisPose3D.x = latestEstimate.translation().x();
+    thisPose3D.y = latestEstimate.translation().y();
+    thisPose3D.z = latestEstimate.translation().z();
+    thisPose3D.intensity = cloudKeyPoses3D->size(); // 使用intensity作为该帧点云的index
+    // thisPose3D.x = odomAftMapped.pose.pose.position.x;
+    // thisPose3D.y = odomAftMapped.pose.pose.position.y;
+    // thisPose3D.z = odomAftMapped.pose.pose.position.z;
+    // geometry_msgs::Quaternion q_ros = odomAftMapped.pose.pose.orientation;
+    // // 手动转换
+    // Eigen::Quaterniond q(q_ros.w, q_ros.x, q_ros.y, q_ros.z);
+    // Eigen::Vector3d eulerAngle1 = q.toRotationMatrix().eulerAngles(2, 1, 0); // yaw-pitch-roll,单位:弧度
+    // thisPose6D.x = odomAftMapped.pose.pose.position.x;
+    // thisPose6D.y = odomAftMapped.pose.pose.position.y;
+    // thisPose6D.z = odomAftMapped.pose.pose.position.z;
+    // thisPose6D.roll = eulerAngle1(0);
+    // thisPose6D.pitch = eulerAngle1(1);
+    // thisPose6D.yaw = eulerAngle1(2);
+
+    thisPose6D.x = thisPose3D.x;
+    thisPose6D.y = thisPose3D.y;
+    thisPose6D.z = thisPose3D.z;
+    thisPose6D.intensity = thisPose3D.intensity;
+    thisPose6D.roll = latestEstimate.rotation().roll();
+    thisPose6D.pitch = latestEstimate.rotation().pitch();
+    thisPose6D.yaw = latestEstimate.rotation().yaw();
     thisPose6D.time = lidar_end_time;
     // 历史关键帧位姿
     cloudKeyPoses6D->push_back(thisPose6D);
@@ -902,7 +1017,13 @@ int main(int argc, char **argv)
     nh.param<vector<double>>("mapping/extrinsic_R", extrinR, vector<double>());
     nh.param<double>("mapping/keyframeAddingDistThreshold", keyframeAddingDistThreshold, 0);
     nh.param<double>("mapping/keyframeAddingAngleThreshold", keyframeAddingAngleThreshold, 0);
-    // cout << "p_pre->lidar_type " << p_pre->lidar_type << endl;
+    cout << "p_pre->lidar_type " << p_pre->lidar_type << endl;
+
+    // ISAM2参数
+    gtsam::ISAM2Params parameters;
+    parameters.relinearizeThreshold = 0.01;
+    parameters.relinearizeSkip = 1;
+    isam = new gtsam::ISAM2(parameters);
 
     path.header.stamp = ros::Time::now();
     path.header.frame_id = "camera_init";
@@ -947,10 +1068,11 @@ int main(int argc, char **argv)
 
     /*** debug record ***/
     FILE *fp;
+    string g2o_dir = root_dir + "/singlesession_posegraph.g2o";
     string pos_log_dir = root_dir + "/Log/pos_log.txt";
     fp = fopen(pos_log_dir.c_str(), "w");
 
-    ofstream fout_pre, fout_out, fout_pos, fout_update_pose;
+    ofstream fout_pre, fout_out, fout_pos, fout_update_pose, fout_g2o;
     string pre_dir = root_dir + "/Log/mat_pre.txt";
     string out_dir = root_dir + "/Log/mat_out.txt";
     string pos_dir = root_dir + "/Log/pos_log.txt";
@@ -959,6 +1081,7 @@ int main(int argc, char **argv)
     fout_out.open(out_dir.c_str(), ios::out);
     fout_pos.open(pos_dir.c_str(), ios::out);
     fout_update_pose.open(update_pose_dir.c_str(), ios::out);
+    fout_g2o.open(g2o_dir.c_str(), ios::out);
     if (fout_pre && fout_out)
         cout << "~~~~" << root_dir << " file opened" << endl;
     else
@@ -978,7 +1101,7 @@ int main(int argc, char **argv)
     signal(SIGINT, SigHandle);
     ros::Rate rate(5000);
     bool status = ros::ok();
-    const double EXIT_TIMEOUT = 5.0;                // 15秒超时退出
+    const double EXIT_TIMEOUT = 50.0;                // 15秒超时退出
     ros::Time last_message_time = ros::Time::now(); // 记录最后一次接收消息的时间
     while (status)
     {
@@ -1231,7 +1354,7 @@ int main(int argc, char **argv)
     // save poses
     std::cout << "Saving poses" << std::endl;
     string traj_dir(root_dir + "/trajectory.pcd");
-    if(!cloudKeyPoses3D->points.empty())
+    if (!cloudKeyPoses3D->points.empty())
     {
         pcl::io::savePCDFileASCII(traj_dir, *cloudKeyPoses3D);
     }
@@ -1240,10 +1363,13 @@ int main(int argc, char **argv)
         std::cout << "No keyframe poses to save!" << std::endl;
     }
 
-
     // save pose graph
-    // cout << "****************************************************" << endl;
-    // cout << "Saving  posegraph" << endl;
+    cout << "****************************************************" << endl;
+    cout << "Saving  posegraph" << endl;
+    for (auto &_line : vertices_str)
+        fout_g2o << _line << std::endl;
+    for (auto &_line : edges_str)
+        fout_g2o << _line << std::endl;
 
     for (auto &_po : update_nokf_poses)
     {
@@ -1251,6 +1377,7 @@ int main(int argc, char **argv)
     }
 
     fout_update_pose.close();
+    fout_g2o.close();
 
     if (runtime_pos_log)
     {

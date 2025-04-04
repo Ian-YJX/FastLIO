@@ -8,7 +8,7 @@ int main(int argc, char** argv)
     ltremovert::Removerter RMV;
     RMV.run();
 
-    ros::spin();
+    // ros::spin();
 
     return 0;
 }

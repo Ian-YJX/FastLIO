@@ -101,10 +101,10 @@ public:
         partitionCurrentMap(const Session& _target_sess, const Session& _source_sess, float _res_alpha);
 
     void removeOnce(const Session& _target_sess, const Session& _source_sess, float _res_alpha);
-    void removeOnce(float _res);
+    // void removeOnce(float _res);
 
     void revertOnce( const Session& _target_sess, const Session& _source_sess, float _res_alpha );
-    void revertOnce(float _res);
+    // void revertOnce(float _res);
 
     void resetCurrrentMapAsDynamic(const Session& _sess, bool _as_dynamic);
     void resetCurrrentMapAsDynamic(const Session& _sess);
