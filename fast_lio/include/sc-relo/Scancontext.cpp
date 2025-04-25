@@ -16,19 +16,19 @@ namespace ScanContext
     }
 
     float deg2rad(float degrees)
-    { 
+    {
         return degrees * M_PI / 180.0;
     }
 
     float xy2theta(const float &_x, const float &_y)
     {
-        if (_x >= 0 & _y >= 0)
+        if (_x >= 0 && _y >= 0)
             return (180 / M_PI) * atan(_y / _x);
 
-        else if (_x < 0 & _y >= 0)
+        else if (_x < 0 && _y >= 0)
             return 180 - ((180 / M_PI) * atan(_y / (-_x)));
 
-        else if (_x < 0 & _y < 0)
+        else if (_x < 0 && _y < 0)
             return 180 + ((180 / M_PI) * atan(_y / _x));
 
         else
@@ -79,30 +79,57 @@ namespace ScanContext
      */
     double SCManager::distDirectSC(MatrixXd &_sc1, MatrixXd &_sc2)
     {
-        int num_eff_cols = 0; // i.e., to exclude all-nonzero sector
+        int num_eff_cols = 0;
         double sum_sector_similarity = 0;
-        // 遍历两个SC矩阵的所有列
+
         for (int col_idx = 0; col_idx < _sc1.cols(); col_idx++)
         {
             VectorXd col_sc1 = _sc1.col(col_idx);
             VectorXd col_sc2 = _sc2.col(col_idx);
 
-            // 如果其中有一列一个点云都没有，那么直接不比较
-            if (col_sc1.norm() == 0 | col_sc2.norm() == 0)
-                continue; // don't count this sector pair.
+            // 修复：使用逻辑或 ||，而不是按位或 |
+            if (col_sc1.norm() == 0 || col_sc2.norm() == 0)
+                continue;
 
-            // 求两个列向量之间的 cos(\theta)
             double sector_similarity = col_sc1.dot(col_sc2) / (col_sc1.norm() * col_sc2.norm());
-
-            sum_sector_similarity = sum_sector_similarity + sector_similarity;
-            num_eff_cols = num_eff_cols + 1;
+            sum_sector_similarity += sector_similarity;
+            num_eff_cols++;
         }
 
-        // 越相似，cos越大，得分越大
-        double sc_sim = sum_sector_similarity / num_eff_cols;
-        return 1.0 - sc_sim; // 然后1-cos，变成如果越相似，则值越小
+        // 加入健壮性判断，避免除以 0
+        if (num_eff_cols == 0)
+            return 1.0; // 完全不同（或异常）
 
-    } // distDirectSC
+        double sc_sim = sum_sector_similarity / num_eff_cols;
+        return 1.0 - sc_sim;
+    }
+
+    // double SCManager::distDirectSC(MatrixXd &_sc1, MatrixXd &_sc2)
+    // {
+    //     int num_eff_cols = 0; // i.e., to exclude all-nonzero sector
+    //     double sum_sector_similarity = 0;
+    //     // 遍历两个SC矩阵的所有列
+    //     for (int col_idx = 0; col_idx < _sc1.cols(); col_idx++)
+    //     {
+    //         VectorXd col_sc1 = _sc1.col(col_idx);
+    //         VectorXd col_sc2 = _sc2.col(col_idx);
+
+    //         // 如果其中有一列一个点云都没有，那么直接不比较
+    //         if (col_sc1.norm() == 0 | col_sc2.norm() == 0)
+    //             continue; // don't count this sector pair.
+
+    //         // 求两个列向量之间的 cos(\theta)
+    //         double sector_similarity = col_sc1.dot(col_sc2) / (col_sc1.norm() * col_sc2.norm());
+
+    //         sum_sector_similarity = sum_sector_similarity + sector_similarity;
+    //         num_eff_cols = num_eff_cols + 1;
+    //     }
+
+    //     // 越相似，cos越大，得分越大
+    //     double sc_sim = sum_sector_similarity / num_eff_cols;
+    //     return 1.0 - sc_sim; // 然后1-cos，变成如果越相似，则值越小
+
+    // } // distDirectSC
 
     /**
      * @brief 输入两个sector key，寻找让他们两个最匹配的水平偏移
@@ -209,7 +236,7 @@ namespace ScanContext
         float azim_angle, azim_range; // wihtin 2d plane
         int ring_idx, sctor_idx;
         // Step 2. 遍历每个点，往bin中赋值点云最大高度
-        for (size_t pt_idx = 0; pt_idx < num_pts_scan_down; pt_idx++)
+        for (size_t pt_idx = 0; pt_idx < (size_t)num_pts_scan_down; pt_idx++)
         {
             pt.x = _scan_down.points[pt_idx].x;
             pt.y = _scan_down.points[pt_idx].y;
@@ -323,141 +350,54 @@ namespace ScanContext
 
     } // SCManager::makeAndSaveScancontextAndKeys
 
-    void SCManager::saveScancontextAndKeys( Eigen::MatrixXd _scd ){
-        Eigen::MatrixXd ringkey = makeRingkeyFromScancontext( _scd );
-        Eigen::MatrixXd sectorkey = makeSectorkeyFromScancontext( _scd );
-        std::vector<float> polarcontext_invkey_vec = eig2stdvec( ringkey );
+    void SCManager::saveScancontextAndKeys(Eigen::MatrixXd _scd)
+    {
+        Eigen::MatrixXd ringkey = makeRingkeyFromScancontext(_scd);
+        Eigen::MatrixXd sectorkey = makeSectorkeyFromScancontext(_scd);
+        std::vector<float> polarcontext_invkey_vec = eig2stdvec(ringkey);
 
-        polarcontexts_.push_back( _scd ); 
-        polarcontext_invkeys_.push_back( ringkey );
-        polarcontext_vkeys_.push_back( sectorkey );
-        polarcontext_invkeys_mat_.push_back( polarcontext_invkey_vec );
+        polarcontexts_.push_back(_scd);
+        polarcontext_invkeys_.push_back(ringkey);
+        polarcontext_vkeys_.push_back(sectorkey);
+        polarcontext_invkeys_mat_.push_back(polarcontext_invkey_vec);
     } // SCManager::SaveScancontextAndKeys
 
-    std::pair<int, float> SCManager::detectLoopClosureIDBetweenSession (std::vector<float>& _curr_key, Eigen::MatrixXd& _curr_desc){
-        int loop_id { -1 }; // init with -1, -1 means no loop (== LeGO-LOAM's variable "closestHistoryFrameID")
+    std::pair<int, float> SCManager::detectLoopClosureIDBetweenSession(std::vector<float> &_curr_key, Eigen::MatrixXd &_curr_desc)
+    {
+        int loop_id{-1}; // init with -1, -1 means no loop (== LeGO-LOAM's variable "closestHistoryFrameID")
 
-        auto& curr_key = _curr_key;
-        auto& curr_desc = _curr_desc; // current observation (query)
+        auto &curr_key = _curr_key;
+        auto &curr_desc = _curr_desc; // current observation (query)
 
         // step 0: if first, construct the tree in batch
-        if( ! is_tree_batch_made ) // run only once
+        if (!is_tree_batch_made) // run only once
         {
             polarcontext_invkeys_to_search_.clear();
-            polarcontext_invkeys_to_search_.assign( polarcontext_invkeys_mat_.begin(), polarcontext_invkeys_mat_.end() ) ;
+            polarcontext_invkeys_to_search_.assign(polarcontext_invkeys_mat_.begin(), polarcontext_invkeys_mat_.end());
 
-            polarcontext_tree_batch_.reset(); 
-            polarcontext_tree_batch_ = std::make_unique<InvKeyTree>(PC_NUM_RING /* dim */, polarcontext_invkeys_to_search_, 10 /* max leaf */ );
+            polarcontext_tree_batch_.reset();
+            polarcontext_tree_batch_ = std::make_unique<InvKeyTree>(PC_NUM_RING /* dim */, polarcontext_invkeys_to_search_, 10 /* max leaf */);
 
             is_tree_batch_made = true; // for running this block only once
         }
-        
+
         double min_dist = 10000000; // init with somthing large
         int nn_align = 0;
         int nn_idx = 0;
 
         // step 1: knn search
-        std::vector<size_t> candidate_indexes( NUM_CANDIDATES_FROM_TREE ); 
-        std::vector<float> out_dists_sqr( NUM_CANDIDATES_FROM_TREE );
+        std::vector<size_t> candidate_indexes(NUM_CANDIDATES_FROM_TREE);
+        std::vector<float> out_dists_sqr(NUM_CANDIDATES_FROM_TREE);
 
-        nanoflann::KNNResultSet<float> knnsearch_result( NUM_CANDIDATES_FROM_TREE );
-        knnsearch_result.init( &candidate_indexes[0], &out_dists_sqr[0] );
-        polarcontext_tree_batch_->index->findNeighbors( knnsearch_result, &curr_key[0] /* query */, nanoflann::SearchParams(10) ); // error here
-
-        // step 2: pairwise distance (find optimal columnwise best-fit using cosine distance)
-        TicToc t_calc_dist;   
-        for ( int candidate_iter_idx = 0; candidate_iter_idx < NUM_CANDIDATES_FROM_TREE; candidate_iter_idx++ )
-        {
-            MatrixXd polarcontext_candidate = polarcontexts_[ candidate_indexes[candidate_iter_idx] ];
-            std::pair<double, int> sc_dist_result = distanceBtnScanContext( curr_desc, polarcontext_candidate ); 
-        
-            double candidate_dist = sc_dist_result.first;
-            int candidate_align = sc_dist_result.second;
-
-            if( candidate_dist < min_dist ){
-                min_dist = candidate_dist;
-                nn_align = candidate_align;
-
-                nn_idx = candidate_indexes[candidate_iter_idx];
-            }
-        }
-        t_calc_dist.toc("Distance calc");
-
-        // step 3: similarity threshold
-        if( min_dist < SC_DIST_THRES )
-            loop_id = nn_idx; 
-
-        // To do: return also nn_align (i.e., yaw diff)
-        float yaw_diff_rad = deg2rad(nn_align * PC_UNIT_SECTORANGLE);
-        std::pair<int, float> result {loop_id, yaw_diff_rad};
-
-        return result;
-
-    } // SCManager::detectLoopClosureIDBetweenSession
-
-    const Eigen::MatrixXd& SCManager::getConstRefRecentSCD(void){
-        return polarcontexts_.back();
-    }
-
-    std::pair<int, float> SCManager::detectClosestKeyframeID(int num_exclude_recent, const std::vector<float> &curr_key, Eigen::MatrixXd &curr_desc)
-    {
-        int loop_id{-1}; // init with -1, -1 means no loop (== LeGO-LOAM's variable "closestHistoryFrameID")
-
-        /*
-         * step 1: candidates from ringkey tree_
-         */
-        // Step 1. 数据库中关键帧数量太少，则不检测回环？
-        if (polarcontext_invkeys_mat_.size() < num_exclude_recent + 1)
-        {
-            std::pair<int, float> result{loop_id, 0.0};
-            return result; // Early return
-        }
-
-        // Step 2. 经过一段时间之后，就重新构造 ring-key的kdtree
-        // tree_ reconstruction (not mandatory to make everytime)
-        if (tree_making_period_conter % TREE_MAKING_PERIOD_ == 0) // to save computation cost
-        {
-            // TicToc t_tree_construction;
-
-            polarcontext_invkeys_to_search_.clear();
-            // 最近50帧很难构成回环，因此构造kdtree的数据不包括最近的50帧
-            polarcontext_invkeys_to_search_.assign(polarcontext_invkeys_mat_.begin(), polarcontext_invkeys_mat_.end() - num_exclude_recent);
-
-            // 重新构造kdtree
-            polarcontext_tree_.reset();
-            polarcontext_tree_ = std::make_shared<InvKeyTree>(PC_NUM_RING /* dim */, polarcontext_invkeys_to_search_, 10 /* max leaf */);
-            // tree_ptr_->index->buildIndex(); // inernally called in the constructor of InvKeyTree (for detail, refer the nanoflann and KDtreeVectorOfVectorsAdaptor)
-            // t_tree_construction.toc("Tree construction");
-        }
-        tree_making_period_conter = tree_making_period_conter + 1;
-
-        double min_dist = 10000000; // init with somthing large
-        int nn_align = 0;
-        int nn_idx = 0;
-
-        // Step 3. 使用kdtree进行knn的最近邻查找
-        // knn search
-        // 从kdtree中寻找10个最相似的候选帧
-        std::vector<size_t> candidate_indexes(NUM_CANDIDATES_FROM_TREE); // 10个最相似候选帧的索引
-        std::vector<float> out_dists_sqr(NUM_CANDIDATES_FROM_TREE);      // 10个最相似候选帧的距离
-
-        // TicToc t_tree_search;
         nanoflann::KNNResultSet<float> knnsearch_result(NUM_CANDIDATES_FROM_TREE);
         knnsearch_result.init(&candidate_indexes[0], &out_dists_sqr[0]);
-        // 调用接口查找距离最近的10个候选帧
-        polarcontext_tree_->index->findNeighbors(knnsearch_result, &curr_key[0] /* query */, nanoflann::SearchParams(10));
-        // t_tree_search.toc("Tree search");
+        polarcontext_tree_batch_->index->findNeighbors(knnsearch_result, &curr_key[0] /* query */, nanoflann::SearchParams(10)); // error here
 
-        // Step 4. 遍历最相似候选帧，计算Scan-Context距离
-        /*
-         *  step 2: pairwise distance (find optimal columnwise best-fit using cosine distance)
-         */
-        // TicToc t_calc_dist;
+        // step 2: pairwise distance (find optimal columnwise best-fit using cosine distance)
+        TicToc t_calc_dist;
         for (int candidate_iter_idx = 0; candidate_iter_idx < NUM_CANDIDATES_FROM_TREE; candidate_iter_idx++)
         {
-            // 每个相似候选帧的SC矩阵
             MatrixXd polarcontext_candidate = polarcontexts_[candidate_indexes[candidate_iter_idx]];
-            // 当前帧和SC矩阵计算相似得分，返回结果是 <最近的sc距离， _sc2右移的列数>
             std::pair<double, int> sc_dist_result = distanceBtnScanContext(curr_desc, polarcontext_candidate);
 
             double candidate_dist = sc_dist_result.first;
@@ -468,35 +408,217 @@ namespace ScanContext
                 min_dist = candidate_dist;
                 nn_align = candidate_align;
 
-                nn_idx = candidate_indexes[candidate_iter_idx]; // 找到最匹配的关键帧的索引
+                nn_idx = candidate_indexes[candidate_iter_idx];
             }
         }
-        // t_calc_dist.toc("Distance calc");
+        t_calc_dist.toc("Distance calc");
 
-        // Step 5. 计算的最小距离要小于设定的阈值
-        /*
-         * loop threshold check
-         */
+        // step 3: similarity threshold
         if (min_dist < SC_DIST_THRES)
-        {
             loop_id = nn_idx;
-
-            // std::cout.precision(3);
-            // cout << "[Loop found] Nearest distance: " << min_dist << " btn " << polarcontexts_.size() - 1 << " and " << nn_idx << "." << endl;
-            // cout << "[Loop found] yaw diff: " << nn_align * PC_UNIT_SECTORANGLE << " deg." << endl;
-        }
-        else
-        {
-            // std::cout.precision(3);
-            // cout << "[Not loop] Nearest distance: " << min_dist << " btn " << polarcontexts_.size() - 1 << " and " << nn_idx << "." << endl;
-            // cout << "[Not loop] yaw diff: " << nn_align * PC_UNIT_SECTORANGLE << " deg." << endl;
-        }
 
         // To do: return also nn_align (i.e., yaw diff)
         float yaw_diff_rad = deg2rad(nn_align * PC_UNIT_SECTORANGLE);
         std::pair<int, float> result{loop_id, yaw_diff_rad};
 
         return result;
+
+    } // SCManager::detectLoopClosureIDBetweenSession
+
+    const Eigen::MatrixXd &SCManager::getConstRefRecentSCD(void)
+    {
+        return polarcontexts_.back();
+    }
+
+    // std::pair<int, float> SCManager::detectClosestKeyframeID(int num_exclude_recent, const std::vector<float> &curr_key, Eigen::MatrixXd &curr_desc)
+    // {
+    //     int loop_id{-1}; // init with -1, -1 means no loop (== LeGO-LOAM's variable "closestHistoryFrameID")
+
+    //     /*
+    //      * step 1: candidates from ringkey tree_
+    //      */
+    //     // Step 1. 数据库中关键帧数量太少，则不检测回环？
+    //     if (polarcontext_invkeys_mat_.size() < num_exclude_recent + 1)
+    //     {
+    //         std::pair<int, float> result{loop_id, 0.0};
+    //         return result; // Early return
+    //     }
+
+    //     // Step 2. 经过一段时间之后，就重新构造 ring-key的kdtree
+    //     // tree_ reconstruction (not mandatory to make everytime)
+    //     if (tree_making_period_conter % TREE_MAKING_PERIOD_ == 0) // to save computation cost
+    //     {
+    //         // TicToc t_tree_construction;
+
+    //         polarcontext_invkeys_to_search_.clear();
+    //         // 最近50帧很难构成回环，因此构造kdtree的数据不包括最近的50帧
+    //         polarcontext_invkeys_to_search_.assign(polarcontext_invkeys_mat_.begin(), polarcontext_invkeys_mat_.end() - num_exclude_recent);
+
+    //         // 重新构造kdtree
+    //         polarcontext_tree_.reset();
+    //         polarcontext_tree_ = std::make_shared<InvKeyTree>(PC_NUM_RING /* dim */, polarcontext_invkeys_to_search_, 10 /* max leaf */);
+    //         // tree_ptr_->index->buildIndex(); // inernally called in the constructor of InvKeyTree (for detail, refer the nanoflann and KDtreeVectorOfVectorsAdaptor)
+    //         // t_tree_construction.toc("Tree construction");
+    //     }
+    //     tree_making_period_conter = tree_making_period_conter + 1;
+
+    //     double min_dist = 10000000; // init with somthing large
+    //     int nn_align = 0;
+    //     int nn_idx = 0;
+
+    //     // Step 3. 使用kdtree进行knn的最近邻查找
+    //     // knn search
+    //     // 从kdtree中寻找10个最相似的候选帧
+    //     std::vector<size_t> candidate_indexes(NUM_CANDIDATES_FROM_TREE); // 10个最相似候选帧的索引
+    //     std::vector<float> out_dists_sqr(NUM_CANDIDATES_FROM_TREE);      // 10个最相似候选帧的距离
+
+    //     // TicToc t_tree_search;
+    //     nanoflann::KNNResultSet<float> knnsearch_result(NUM_CANDIDATES_FROM_TREE);
+    //     knnsearch_result.init(&candidate_indexes[0], &out_dists_sqr[0]);
+    //     // 调用接口查找距离最近的10个候选帧
+    //     polarcontext_tree_->index->findNeighbors(knnsearch_result, &curr_key[0] /* query */, nanoflann::SearchParams(10));
+    //     // t_tree_search.toc("Tree search");
+
+    //     // Step 4. 遍历最相似候选帧，计算Scan-Context距离
+    //     /*
+    //      *  step 2: pairwise distance (find optimal columnwise best-fit using cosine distance)
+    //      */
+    //     // TicToc t_calc_dist;
+    //     for (int candidate_iter_idx = 0; candidate_iter_idx < NUM_CANDIDATES_FROM_TREE; candidate_iter_idx++)
+    //     {
+    //         // 每个相似候选帧的SC矩阵
+    //         MatrixXd polarcontext_candidate = polarcontexts_[candidate_indexes[candidate_iter_idx]];
+    //         // 当前帧和SC矩阵计算相似得分，返回结果是 <最近的sc距离， _sc2右移的列数>
+    //         std::pair<double, int> sc_dist_result = distanceBtnScanContext(curr_desc, polarcontext_candidate);
+
+    //         double candidate_dist = sc_dist_result.first;
+    //         int candidate_align = sc_dist_result.second;
+
+    //         if (candidate_dist < min_dist)
+    //         {
+    //             min_dist = candidate_dist;
+    //             nn_align = candidate_align;
+
+    //             nn_idx = candidate_indexes[candidate_iter_idx]; // 找到最匹配的关键帧的索引
+    //         }
+    //     }
+    //     // t_calc_dist.toc("Distance calc");
+
+    //     // Step 5. 计算的最小距离要小于设定的阈值
+    //     /*
+    //      * loop threshold check
+    //      */
+    //     if (min_dist < SC_DIST_THRES)
+    //     {
+    //         loop_id = nn_idx;
+
+    //         // std::cout.precision(3);
+    //         // cout << "[Loop found] Nearest distance: " << min_dist << " btn " << polarcontexts_.size() - 1 << " and " << nn_idx << "." << endl;
+    //         // cout << "[Loop found] yaw diff: " << nn_align * PC_UNIT_SECTORANGLE << " deg." << endl;
+    //     }
+    //     else
+    //     {
+    //         loop_id = nn_idx; // no loop
+    //         cout<<"[Not loop] Nearest distance: " << min_dist << " btn " << polarcontexts_.size() - 1 << " and " << nn_idx << "." << endl;
+    //         // std::cout.precision(3);
+    //         // cout << "[Not loop] Nearest distance: " << min_dist << " btn " << polarcontexts_.size() - 1 << " and " << nn_idx << "." << endl;
+    //         // cout << "[Not loop] yaw diff: " << nn_align * PC_UNIT_SECTORANGLE << " deg." << endl;
+    //     }
+
+    //     // To do: return also nn_align (i.e., yaw diff)
+    //     float yaw_diff_rad = deg2rad(nn_align * PC_UNIT_SECTORANGLE);
+    //     std::pair<int, float> result{loop_id, yaw_diff_rad};
+
+    //     return result;
+    // }
+
+    std::pair<int, float> SCManager::detectClosestKeyframeID(
+        int num_exclude_recent,
+        const std::vector<float> &curr_key,
+        Eigen::MatrixXd &curr_desc)
+    {
+        int loop_id{-1}; // -1 means no loop
+        double min_dist = 1e7;
+        int nn_align = 0;
+        int nn_idx = 0;
+
+        // Check: enough historical frames?
+        if ((int)polarcontext_invkeys_mat_.size() < num_exclude_recent + 1)
+        {
+            ROS_WARN("Not enough keyframes for relocalization: %lu available", polarcontext_invkeys_mat_.size());
+            return {loop_id, 0.0};
+        }
+
+        // Rebuild KD-tree every N frames
+        if (tree_making_period_conter % TREE_MAKING_PERIOD_ == 0)
+        {
+            polarcontext_invkeys_to_search_.clear();
+            polarcontext_invkeys_to_search_.assign(
+                polarcontext_invkeys_mat_.begin(),
+                polarcontext_invkeys_mat_.end() - num_exclude_recent);
+
+            polarcontext_tree_.reset();
+            polarcontext_tree_ = std::make_shared<InvKeyTree>(
+                PC_NUM_RING, polarcontext_invkeys_to_search_, 10);
+        }
+        tree_making_period_conter++;
+
+        // KNN search
+        std::vector<size_t> candidate_indexes(NUM_CANDIDATES_FROM_TREE);
+        std::vector<float> out_dists_sqr(NUM_CANDIDATES_FROM_TREE);
+        nanoflann::KNNResultSet<float> knnsearch_result(NUM_CANDIDATES_FROM_TREE);
+        knnsearch_result.init(&candidate_indexes[0], &out_dists_sqr[0]);
+        polarcontext_tree_->index->findNeighbors(
+            knnsearch_result, &curr_key[0], nanoflann::SearchParams(10));
+
+        // Check each candidate
+        for (int i = 0; i < NUM_CANDIDATES_FROM_TREE; ++i)
+        {
+            int candidate_idx = candidate_indexes[i];
+
+            if (candidate_idx >= (int)polarcontexts_.size())
+            {
+                ROS_WARN("Candidate index out of bounds: %d", candidate_idx);
+                continue;
+            }
+
+            Eigen::MatrixXd &polarcontext_candidate = polarcontexts_[candidate_idx];
+            std::pair<double, int> sc_dist_result = distanceBtnScanContext(curr_desc, polarcontext_candidate);
+            double candidate_dist = sc_dist_result.first;
+            int candidate_align = sc_dist_result.second;
+
+            if (!std::isfinite(candidate_dist))
+            {
+                ROS_WARN("Non-finite SC distance from candidate %d", candidate_idx);
+                continue;
+            }
+
+            std::cout << "[SC Match] Candidate " << candidate_idx
+                      << ", dist = " << candidate_dist << std::endl;
+
+            if (candidate_dist < min_dist)
+            {
+                min_dist = candidate_dist;
+                nn_align = candidate_align;
+                nn_idx = candidate_idx;
+            }
+        }
+
+        // Final decision
+        if (min_dist < SC_DIST_THRES)
+        {
+            loop_id = nn_idx;
+            std::cout << "[Loop Detected] Match with keyframe " << nn_idx
+                      << " | distance = " << min_dist << std::endl;
+        }
+        else
+        {
+            std::cout << "[No Loop] Nearest distance = " << min_dist
+                      << " between current and " << nn_idx << std::endl;
+        }
+
+        float yaw_diff_rad = deg2rad(nn_align * PC_UNIT_SECTORANGLE);
+        return {loop_id, yaw_diff_rad};
     }
 
     /**
@@ -562,7 +684,7 @@ namespace ScanContext
         }
     }
 
-    std::pair<int, float> SCManager::relocalize(pcl::PointCloud<PointType> &scan_down)
+    std::pair<int, float> SCManager::relocalize(pcl::PointCloud<PointType>::Ptr scan_down_ptr)
     {
         if (polarcontexts_.empty())
         {
@@ -570,12 +692,57 @@ namespace ScanContext
             return result;
         }
 
-        Eigen::MatrixXd sc = makeScancontext(scan_down);
+        Eigen::MatrixXd sc = makeScancontext(*scan_down_ptr); // 解引用智能指针，传递实际的点云
         Eigen::MatrixXd ringkey = makeRingkeyFromScancontext(sc);
         // Eigen::MatrixXd sectorkey = makeSectorkeyFromScancontext(sc);
         std::vector<float> polarcontext_invkey_vec = eig2stdvec(ringkey);
 
         return detectClosestKeyframeID(0, polarcontext_invkey_vec, sc);
+    }
+
+    std::pair<int, float> SCManager::detectLoopClosureID(int num_exclude_recent, const std::vector<float> &curr_key, Eigen::MatrixXd &curr_desc)
+    {
+        if (polarcontext_invkeys_.empty())
+        {
+            return std::make_pair(-1, 0.0); // 没有历史帧数据，返回无效ID
+        }
+
+        // 在最近的帧中排除前 num_exclude_recent 帧
+        std::vector<int> candidates;
+        std::vector<float> distances;
+
+        for (int i = 0; i < (int)polarcontext_invkeys_.size(); ++i)
+        {
+            if (i < num_exclude_recent)
+                continue; // 排除最近的几帧
+
+            // 计算当前描述符与历史描述符的距离
+            double dist = distDirectSC(curr_desc, polarcontexts_[i]);
+            if (dist < SC_DIST_THRES) // 如果距离小于阈值，视为一个候选回环闭合帧
+            {
+                candidates.push_back(i);
+                distances.push_back(dist);
+            }
+        }
+
+        if (candidates.empty()) // 没有找到合适的回环闭合帧
+        {
+            return std::make_pair(-1, 0.0);
+        }
+
+        // 选择距离最近的候选帧
+        int closest_id = candidates[0];
+        float min_distance = distances[0];
+        for (size_t i = 1; i < candidates.size(); ++i)
+        {
+            if (distances[i] < min_distance)
+            {
+                closest_id = candidates[i];
+                min_distance = distances[i];
+            }
+        }
+
+        return std::make_pair(closest_id, min_distance);
     }
 
 } // namespace SC2

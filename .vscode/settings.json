@@ -66,5 +66,6 @@
         "typeinfo": "cpp",
         "variant": "cpp",
         "bit": "cpp"
-    }
+    },
+    "cmake.sourceDirectory": "/home/ian/ws_LTMapper/src/FastLIO/balm2"
 }

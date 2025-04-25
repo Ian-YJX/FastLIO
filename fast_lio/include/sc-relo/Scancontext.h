@@ -22,6 +22,7 @@
 #include "KDTreeVectorOfVectorsAdaptor.h"
 
 #include "../tictoc.hpp"
+#include "../common_lib.h"
 
 using namespace Eigen;
 using namespace nanoflann;
@@ -34,7 +35,7 @@ using std::atan2;
 using std::cos;
 using std::sin;
 
-using PointType = pcl::PointXYZINormal; // using xyzinormal for fast-lio. but a user can exchange the original bin encoding function (i.e., max hegiht) to max intensity (for detail, refer 20 ICRA Intensity Scan Context)
+// using PointType = pcl::PointXYZINormal; // using xyzinormal for fast-lio. but a user can exchange the original bin encoding function (i.e., max hegiht) to max intensity (for detail, refer 20 ICRA Intensity Scan Context)
 using KeyMat = std::vector<std::vector<float> >;
 using InvKeyTree = KDTreeVectorOfVectorsAdaptor< KeyMat, float >;
 
@@ -71,8 +72,8 @@ public:
 
     void saveCurrentSCD(const std::string &fileName, int num_digits = 6, const std::string &delimiter = " ");
     void loadPriorSCD(const std::string &path, int num_digits, int num_keyframe);
-    std::pair<int, float> relocalize(pcl::PointCloud<PointType> &_scan_down);
-
+    std::pair<int, float> relocalize(pcl::PointCloud<pcl::PointXYZINormal>::Ptr scan_down_ptr);
+    std::pair<int, float> detectLoopClosureID(int num_exclude_recent, const std::vector<float> &curr_key, Eigen::MatrixXd &curr_desc); //新增的函数
     // User-side API for multi-session
     void saveScancontextAndKeys( Eigen::MatrixXd _scd );
     std::pair<int, float> detectLoopClosureIDBetweenSession ( std::vector<float>& curr_key,  Eigen::MatrixXd& curr_desc);
@@ -96,7 +97,7 @@ public:
     // loop thres
     const double SEARCH_RATIO = 0.2; // for fast comparison, no Brute-force, but search 10 % is okay. // not was in the original conf paper, but improved ver.
     // const double SC_DIST_THRES = 0.13; // empirically 0.1-0.2 is fine (rare false-alarms) for 20x60 polar context (but for 0.15 <, DCS or ICP fit score check (e.g., in LeGO-LOAM) should be required for robustness)
-    double SC_DIST_THRES = 0.3; // 0.4-0.6 is good choice for using with robust kernel (e.g., Cauchy, DCS) + icp fitness threshold / if not, recommend 0.1-0.15
+    double SC_DIST_THRES = 0.6; // 0.4-0.6 is good choice for using with robust kernel (e.g., Cauchy, DCS) + icp fitness threshold / if not, recommend 0.1-0.15
 
     // config 
     const int    TREE_MAKING_PERIOD_ = 50; // i.e., remaking tree frequency, to avoid non-mandatory every remaking, to save time cost / if you want to find a very recent revisits use small value of it (it is enough fast ~ 5-50ms wrt N.).

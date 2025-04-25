@@ -260,12 +260,12 @@ void updatePath(const PointTypePose &pose_in)
 }
 
 // 计算当前帧与前一帧位姿变换,如果变化太小,不设为关键帧,反之设为关键帧
-bool saveFrame()
+bool isKeyFrame()
 {
-    static double lastKeyFrameTime = lidar_end_time;
+    // static double lastKeyFrameTime = lidar_end_time;
     if (cloudKeyPoses3D->points.empty() || cloudKeyPoses6D->points.empty())
         return true;
-    double curKeyFrameTime = lidar_end_time;
+    // double curKeyFrameTime = lidar_end_time;
     // 前一帧位姿,注:最开始没有的时候,在函数extractCloud里面有
     PointTypePose cur_cloud = cloudKeyPoses6D->back();
     Eigen::Affine3f transStart = pclPointToAffine3f(cur_cloud);
@@ -274,44 +274,22 @@ bool saveFrame()
     // 位姿变换增量
     Eigen::Affine3f transBetween = transStart.inverse() * transFinal;
 
-    // std::cout << "Rotation Matrix (3x3):\n" << transBetween.rotation() << std::endl;
-    // std::cout << "Translation Vector (3x1):\n" << transBetween.translation() << std::endl;
-
     float x, y, z, roll, pitch, yaw;
     // pcl::getTranslationAndEulerAngles是根据仿射矩阵计算x,y,z,roll,pitch,yaw
     pcl::getTranslationAndEulerAngles(transBetween, x, y, z, roll, pitch, yaw); // 获取上一帧相对当前帧的位姿
-    // ROS_INFO("roll: %f, pitch: %f, yaw: %f, sqrt(x^2+y^2+z^2): %f", abs(roll), abs(pitch), abs(yaw), sqrt(x * x + y * y + z * z));
     // 旋转和平移量都较小,当前帧不设为关键帧
     if (abs(roll) < keyframeAddingAngleThreshold &&
         abs(pitch) < keyframeAddingAngleThreshold &&
         abs(yaw) < keyframeAddingAngleThreshold &&
         sqrt(x * x + y * y + z * z) < keyframeAddingDistThreshold)
         return false;
-    // else if (abs(roll) >= keyframeAddingAngleThreshold || abs(pitch) >= keyframeAddingAngleThreshold || abs(yaw) >= keyframeAddingAngleThreshold)
-    // {
-    //     if (curKeyFrameTime - lastKeyFrameTime < KEY_FRAME_MIN_INTERVAL)
-    //     {
-    //         // ROS_INFO("Saving for rotation, but time interval is too short");
-    //         return false;
-    //     }
-    //     else
-    //     {
-    //         lastKeyFrameTime = curKeyFrameTime;
-    //         // ROS_WARN("Saving for rotation");
-    //         return true;
-    //     }
-    // }
-    // else if (sqrt(x * x + y * y + z * z) > keyframeAddingDistThreshold)
     else
-    {
-        // ROS_WARN("Saving for translation");
         return true;
-    }
 }
 
 void saveKeyFrame()
 {
-    if (saveFrame() == false)
+    if (isKeyFrame() == false)
         return;
 
     addOdomFactor();
@@ -347,19 +325,6 @@ void saveKeyFrame()
     thisPose3D.y = latestEstimate.translation().y();
     thisPose3D.z = latestEstimate.translation().z();
     thisPose3D.intensity = cloudKeyPoses3D->size(); // 使用intensity作为该帧点云的index
-    // thisPose3D.x = odomAftMapped.pose.pose.position.x;
-    // thisPose3D.y = odomAftMapped.pose.pose.position.y;
-    // thisPose3D.z = odomAftMapped.pose.pose.position.z;
-    // geometry_msgs::Quaternion q_ros = odomAftMapped.pose.pose.orientation;
-    // // 手动转换
-    // Eigen::Quaterniond q(q_ros.w, q_ros.x, q_ros.y, q_ros.z);
-    // Eigen::Vector3d eulerAngle1 = q.toRotationMatrix().eulerAngles(2, 1, 0); // yaw-pitch-roll,单位:弧度
-    // thisPose6D.x = odomAftMapped.pose.pose.position.x;
-    // thisPose6D.y = odomAftMapped.pose.pose.position.y;
-    // thisPose6D.z = odomAftMapped.pose.pose.position.z;
-    // thisPose6D.roll = eulerAngle1(0);
-    // thisPose6D.pitch = eulerAngle1(1);
-    // thisPose6D.yaw = eulerAngle1(2);
 
     thisPose6D.x = thisPose3D.x;
     thisPose6D.y = thisPose3D.y;
@@ -372,11 +337,27 @@ void saveKeyFrame()
     // 历史关键帧位姿
     cloudKeyPoses6D->push_back(thisPose6D);
     cloudKeyPoses3D->push_back(thisPose3D);
+    poseCovariance = isam->marginalCovariance(isamCurrentEstimate.size() - 1);
 
-    // 历史关键帧平面点集合
-    surfCloudKeyFrames.push_back(feats_down_world);
+    // // ESKF状态和方差更新
+    state_ikfom state_updated = kf.get_x(); // 获取cur_pose(还没修正)
+    Eigen::Vector3d pos(latestEstimate.translation().x(), latestEstimate.translation().y(), latestEstimate.translation().z());
+    Eigen::Quaterniond q = EulerToQuat(latestEstimate.rotation().roll(), latestEstimate.rotation().pitch(), latestEstimate.rotation().yaw());
+
+    // 更新状态量
+    state_updated.pos = pos;
+    state_updated.rot = q;
+    state_point = state_updated; // 对state_point进行更新,state_point可视化用到
+    if (aLoopIsClosed == true)
+        kf.change_x(state_updated); // 对cur_pose进行isam2优化后的修正
+
+    pcl::PointCloud<PointType>::Ptr thisSurfKeyFrame(new pcl::PointCloud<PointType>());
+    pcl::copyPointCloud(*feats_undistort, *thisSurfKeyFrame); // 存储关键帧,没有降采样的点云
+    surfCloudKeyFrames.push_back(thisSurfKeyFrame);
+
     updatePath(thisPose6D); // 可视化update后的最新位姿
 }
+
 void SigHandle(int sig)
 {
     flg_exit = true;
@@ -1061,10 +1042,12 @@ int main(int argc, char **argv)
     fsmkdir(root_dir);
     string pcd_path = root_dir + "/PCDs/";
     string scd_path = root_dir + "/SCDs/";
+    string pose_path = root_dir + "/Poses/";
     string log_path = root_dir + "/Log/";
     fsmkdir(pcd_path);
     fsmkdir(scd_path);
     fsmkdir(log_path);
+    fsmkdir(pose_path);
 
     /*** debug record ***/
     FILE *fp;
@@ -1101,7 +1084,7 @@ int main(int argc, char **argv)
     signal(SIGINT, SigHandle);
     ros::Rate rate(5000);
     bool status = ros::ok();
-    const double EXIT_TIMEOUT = 50.0;                // 15秒超时退出
+    const double EXIT_TIMEOUT = 20.0;               // 15秒超时退出
     ros::Time last_message_time = ros::Time::now(); // 记录最后一次接收消息的时间
     while (status)
     {
@@ -1240,16 +1223,15 @@ int main(int argc, char **argv)
                 aver_time_solve = aver_time_solve * (frame_num - 1) / frame_num + (solve_time + solve_H_time) / frame_num;
                 aver_time_const_H_time = aver_time_const_H_time * (frame_num - 1) / frame_num + solve_time / frame_num;
                 T1[time_log_counter] = Measures.lidar_beg_time;
-                s_plot[time_log_counter] = t5 - t0;
-                s_plot2[time_log_counter] = feats_undistort->points.size();
-                s_plot3[time_log_counter] = kdtree_incremental_time;
-                s_plot4[time_log_counter] = kdtree_search_time;
-                s_plot5[time_log_counter] = kdtree_delete_counter;
-                s_plot6[time_log_counter] = kdtree_delete_time;
-                s_plot7[time_log_counter] = kdtree_size_st;
-                s_plot8[time_log_counter] = kdtree_size_end;
-                s_plot9[time_log_counter] = aver_time_consu;
-                s_plot10[time_log_counter] = add_point_size;
+                s_plot[time_log_counter] = t5 - t0;                        // time consumption
+                s_plot2[time_log_counter] = t_update_end - t_update_start; // icp
+                s_plot3[time_log_counter] = match_time;
+                s_plot4[time_log_counter] = kdtree_incremental_time;
+                s_plot5[time_log_counter] = solve_time;
+                s_plot6[time_log_counter] = solve_H_time;
+                s_plot7[time_log_counter] = t1 - t0; // input downsample
+                s_plot8[time_log_counter] = t3 - t1; // icp'
+                s_plot9[time_log_counter] = t5 - t3; // map incre
                 time_log_counter++;
                 printf("[ mapping ]: time: IMU + Map + Input Downsample: %0.6f ave match: %0.6f ave solve: %0.6f  ave ICP: %0.6f  map incre: %0.6f ave total: %0.6f icp: %0.6f construct H: %0.6f \n", t1 - t0, aver_time_match, aver_time_solve, t3 - t1, t5 - t3, aver_time_consu, aver_time_icp, aver_time_const_H_time);
                 ext_euler = SO3ToEuler(state_point.offset_R_L_I);
@@ -1273,10 +1255,10 @@ int main(int argc, char **argv)
     /**************** data saver runs when programe is closing ****************/
     std::cout << "**************** data saver runs when programe is closing ****************" << std::endl;
 
-    if (!((surfCloudKeyFrames.size() == cloudKeyPoses3D->points.size())))
+    if (((surfCloudKeyFrames.size() != cloudKeyPoses3D->points.size()) || (surfCloudKeyFrames.size() != cloudKeyPoses6D->points.size())))
     {
-        std::cout << surfCloudKeyFrames.size() << " " << cloudKeyPoses3D->points.size() << std::endl;
-        std::cout << " the condition --surfCloudKeyFrames.size() == cloudKeyPoses3D->points.size()-- is not satisfied" << std::endl;
+        std::cout << surfCloudKeyFrames.size() << " " << cloudKeyPoses3D->points.size() << " " << cloudKeyPoses6D->points.size() << std::endl;
+        std::cout << " the condition --surfCloudKeyFrames.size() == cloudKeyPoses3D->points.size() == cloudKeyPoses6D->points.size()-- is not satisfied" << std::endl;
         ros::shutdown();
     }
     else
@@ -1307,7 +1289,7 @@ int main(int argc, char **argv)
         cout << "Current scan saved to " << file_name << endl;
         pcl::io::savePCDFileASCII(all_points_dir, *pcl_wait_save);
     }
-    // save sc and keyframe
+    // save sc, pose and pointcloud of keyframe
     // - SINGLE_SCAN_FULL: using downsampled original point cloud (/full_cloud_projected + downsampling)
     // - MULTI_SCAN_FEAT: using NearKeyframes (because a MulRan scan does not have beyond region, so to solve this issue ... )
     const SCInputType sc_input_type = SCInputType::SINGLE_SCAN_FULL; // TODO: change this in ymal
@@ -1320,6 +1302,7 @@ int main(int argc, char **argv)
         if (sc_input_type == SCInputType::SINGLE_SCAN_FULL)
         {
             pcl::copyPointCloud(*surfCloudKeyFrames[i], *save_cloud);
+
             scLoop.makeAndSaveScancontextAndKeys(*save_cloud);
         }
         else if (sc_input_type == SCInputType::MULTI_SCAN_FEAT)
@@ -1339,24 +1322,31 @@ int main(int argc, char **argv)
             scLoop.makeAndSaveScancontextAndKeys(*save_cloud);
         }
 
-        // save sc data
+        // save keyframe scd
         const auto &curr_scd = scLoop.getConstRefRecentSCD();
         std::string curr_scd_node_idx = padZeros(scLoop.polarcontexts_.size() - 1);
-
         writeSCD(scd_path + curr_scd_node_idx + ".scd", curr_scd);
 
+        // save keyframe pcd
         string all_points_dir(pcd_path + string(curr_scd_node_idx) + ".pcd");
         save_cloud->width = save_cloud->points.size();
         save_cloud->height = 1;
         pcl::io::savePCDFileASCII(all_points_dir, *save_cloud);
+
+        // save keyframe pose
+        PointTypePose pose = cloudKeyPoses6D->points[i];
+        std::string pose_file_path = pose_path + curr_scd_node_idx + ".pose";
+        writePose(pose_file_path, pose);
     }
 
     // save poses
     std::cout << "Saving poses" << std::endl;
     string traj_dir(root_dir + "/trajectory.pcd");
+    string trans_dir(root_dir + "/transformation.pcd");
     if (!cloudKeyPoses3D->points.empty())
     {
         pcl::io::savePCDFileASCII(traj_dir, *cloudKeyPoses3D);
+        pcl::io::savePCDFileASCII(trans_dir, *cloudKeyPoses6D);
     }
     else
     {
@@ -1385,10 +1375,10 @@ int main(int argc, char **argv)
         FILE *fp2;
         string log_dir = root_dir + "/Log/fast_lio_time_log.csv";
         fp2 = fopen(log_dir.c_str(), "w");
-        fprintf(fp2, "time_stamp, total time, scan point size, incremental time, search time, delete size, delete time, tree size st, tree size end, add point size, preprocess time\n");
+        fprintf(fp2, "index, time_stamp, total time, icp time, match time, incremental time, solve time, construct H time, input downsample time, icp1 time, map incre time, preprocess time\n");
         for (int i = 0; i < time_log_counter; i++)
         {
-            fprintf(fp2, "%0.8f,%0.8f,%d,%0.8f,%0.8f,%d,%0.8f,%d,%d,%d,%0.8f\n", T1[i], s_plot[i], int(s_plot2[i]), s_plot3[i], s_plot4[i], int(s_plot5[i]), s_plot6[i], int(s_plot7[i]), int(s_plot8[i]), int(s_plot10[i]), s_plot11[i]);
+            fprintf(fp2, "%d,%0.8f,%0.8f,%0.8f,%0.8f,%0.8f,%0.8f,%0.8f,%0.8f,%0.8f,%0.8f,%0.8f\n", i + 1, T1[i], s_plot[i], s_plot2[i], s_plot3[i], s_plot4[i], s_plot5[i], s_plot6[i], s_plot7[i], s_plot8[i], s_plot9[i], s_plot11[i]);
             t.push_back(T1[i]);
             s_vec.push_back(s_plot9[i]);
             s_vec2.push_back(s_plot3[i] + s_plot6[i]);

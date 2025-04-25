@@ -1,6 +1,7 @@
 common:
     lid_topic:  "/livox/lidar"
     imu_topic:  "/livox/imu"
+    rootDir: "/home/ian/ws_LTMapper/data_lio"
     time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
     
 preprocess:
@@ -19,8 +20,10 @@ mapping:
     extrinsic_R: [ 1, 0, 0,
                    0, 1, 0,
                    0, 0, 1]
-
+    keyframeAddingDistThreshold: 3.0
+    keyframeAddingAngleThreshold: 0.6 
+    
 publish:     
     scan_publish_en:  true       # 'false' will close all the point cloud output
-    dense_publish_en: ture       # false will low down the points number in a global-frame point clouds scan.
+    dense_publish_en: true       # false will low down the points number in a global-frame point clouds scan.
     scan_bodyframe_pub_en: true  # output the point cloud scans in IMU-body-frame
